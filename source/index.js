@@ -32,6 +32,12 @@ exports.postdeploy = function(serviceBasePath) {
     var builtBasePath = PATH.join(serviceBasePath, "built");
     var deploymentBasePath = PATH.join(serviceBasePath, "configured");
 
+    console.log("[pio.postdeploy]", {
+        configPath: configPath,
+        syncPath: syncPath,
+        livePath: livePath
+    });
+
     function ensurePrerequisites() {
 /*
         var activatePath = PATH.join(binPath, "activate.sh");
@@ -46,11 +52,118 @@ exports.postdeploy = function(serviceBasePath) {
     }
 
 	function scanSync() {
+        console.log("[pio.postdeploy] scanSync");
+
+        // TODO: Replace this checksum logic with 1) meta data if available 2) better scanning that does not load files into memory.
+
+        // ----------------
+        // @source https://github.com/mcavage/node-dirsum/blob/master/lib/dirsum.js
+        // Changes:
+        //  * Do not die on non-existent symlink.
+        //  * Bugfixes.
+        // TODO: Contribute back to author.
+        function _summarize(method, hashes) {
+          var keys = Object.keys(hashes);
+          keys.sort();
+
+          var obj = {};
+          obj.files = hashes;
+          var hash = CRYPTO.createHash(method);
+          for (var i = 0; i < keys.length; i++) {
+            if (typeof(hashes[keys[i]]) === 'string') {
+              hash.update(hashes[keys[i]]);
+            } else if (typeof(hashes[keys[i]]) === 'object') {
+              hash.update(hashes[keys[i]].hash);
+            } else {
+              console.error('Unknown type found in hash: ' + typeof(hashes[keys[i]]));
+            }
+          }
+
+          obj.hash = hash.digest('hex');
+          return obj;
+        }
+
+        function digest(root, method, callback) {
+          if (!root || typeof(root) !== 'string') {
+            throw new TypeError('root is required (string)');
+          }
+          if (method) {
+            if (typeof(method) === 'string') {
+              // NO-OP
+            } else if (typeof(method) === 'function') {
+              callback = method;
+              method = 'md5';
+            } else {
+              throw new TypeError('hash must be a string');
+            }
+          } else {
+            throw new TypeError('callback is required (function)');
+          }
+          if (!callback) {
+            throw new TypeError('callback is required (function)');
+          }
+
+          var hashes = {};
+
+          FS.readdir(root, function(err, files) {
+            if (err) return callback(err);
+
+            if (files.length === 0) {
+              return callback(undefined, {hash: '', files: {}});
+            }
+            var hashed = 0;
+            files.forEach(function(f) {
+              var path = root + '/' + f;
+              FS.stat(path, function(err, stats) {
+                if (err) {
+                    if (err.code === "ENOENT") {
+                        // We have a symlink that points to target that does not exist.
+                        hashes[f] = "na";
+                        if (++hashed >= files.length) {
+                          return callback(undefined, _summarize(method, hashes));
+                        }
+                        return;
+                    }
+                    return callback(err);
+                }
+                if (stats.isDirectory()) {
+                  return digest(path, method, function(err, hash) {
+                    if (err) return callback(err);
+
+                    hashes[f] = hash;
+                    if (++hashed >= files.length) {
+                      return callback(undefined, _summarize(method, hashes));
+                    }
+                  });
+                } else if (stats.isFile()) {
+                  FS.readFile(path, 'utf8', function(err, data) {
+                    if (err) return callback(err);
+
+                    var hash = CRYPTO.createHash(method);
+                    hash.update(data);
+                    hashes[f] = hash.digest('hex');
+
+                    if (++hashed >= files.length) {
+                      return callback(undefined, _summarize(method, hashes));
+                    }
+                  });
+                } else {
+                  console.error('Skipping hash of %s', f);
+                  if (++hashed > files.length) {
+                    return callback(undefined, _summarize(method, hashes));
+                  }
+                }
+              });
+            });
+          });
+        }
+        // ----------------
+
 		return Q.denodeify(function(callback) {
-            return DIRSUM.digest(PATH.join(syncPath, "source"), "sha1", function (err, sourceHashes) {
+            return digest(PATH.join(syncPath, "source"), "sha1", function (err, sourceHashes) {
                 if (err) return callback(err);
 
-    			return DIRSUM.digest(PATH.join(syncPath, "scripts"), "sha1", function (err, scriptsHashes) {
+    			return digest(PATH.join(syncPath, "scripts"), "sha1", function (err, scriptsHashes) {
     				if (err) return callback(err);
 
     				return callback(null, {
@@ -63,6 +176,7 @@ exports.postdeploy = function(serviceBasePath) {
 	}
 
     function scanConfig() {
+        console.log("[pio.postdeploy] scanConfig");
         return Q.denodeify(FS.readJson)(configPath).then(function(config) {
             var shasum = CRYPTO.createHash("sha1");
             shasum.update(JSON.stringify(config));
@@ -75,6 +189,7 @@ exports.postdeploy = function(serviceBasePath) {
     }
 
     function prepare(preparedPath, configInfo) {
+        console.log("[pio.postdeploy] prepare", preparedPath);
         var tmpPath = preparedPath + "~" + Date.now();
         return Q.denodeify(function(callback) {
             function checkExisting(callback) {
@@ -106,7 +221,7 @@ exports.postdeploy = function(serviceBasePath) {
                 if (!FS.existsSync(PATH.dirname(tmpPath))) {
                     FS.mkdirsSync(PATH.dirname(tmpPath));
                 }
-                return EXEC('cp -Rf "' + syncPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
+                return EXEC('cp -Rdf "' + syncPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
                     if (err) {
                         console.error(stdout);
                         console.error(stderr);
@@ -212,6 +327,7 @@ exports.postdeploy = function(serviceBasePath) {
     }
 
 	function build(preparedPath, builtPath, syncInfo, configInfo) {
+        console.log("[pio.postdeploy] build", preparedPath, builtPath);
         var tmpPath = builtPath + "~" + Date.now();
         return Q.denodeify(function(callback) {
             function checkExisting(callback) {
@@ -378,7 +494,7 @@ return callback(null);
                         '#!/bin/sh -e',
                         '. /opt/bin/activate.sh'
                     ].join("\n"));
-                    return EXEC('cp -Rf "' + PATH.join(preparedPath, "source") + '" "' + PATH.join(tmpPath, "build") + '"', function(err, stdout, stderr) {
+                    return EXEC('cp -Rdf "' + PATH.join(preparedPath, "source") + '" "' + PATH.join(tmpPath, "build") + '"', function(err, stdout, stderr) {
                         if (err) {
                             console.error(stdout);
                             console.error(stderr);
@@ -440,6 +556,7 @@ return callback(null);
 	}
 
     function configure(preparedPath, builtPath, deploymentPath, configInfo) {
+        console.log("[pio.postdeploy] configure", preparedPath, builtPath, deploymentPath);
         var tmpPath = deploymentPath; // + "~" + Date.now();
         return Q.denodeify(function(callback) {
             function checkExisting(callback) {
@@ -469,7 +586,7 @@ return callback(null);
                 }
                 console.log("Configuring ...".magenta);
                 FS.mkdirsSync(PATH.dirname(tmpPath));
-                return EXEC('cp -Rf "' + builtPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
+                return EXEC('cp -Rdf "' + builtPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
                     if (err) {
                         console.error(stdout);
                         console.error(stderr);
@@ -499,14 +616,14 @@ return callback(null);
                     return FS.copy(configPath, PATH.join(tmpPath, PATH.basename(configPath)), function(err) {
                         if (err) return callback(err);
 
-                        return EXEC('cp -Rf "' + PATH.join(preparedPath, "scripts") + '" "' + PATH.join(tmpPath, "scripts") + '"', function(err, stdout, stderr) {
+                        return EXEC('cp -Rdf "' + PATH.join(preparedPath, "scripts") + '" "' + PATH.join(tmpPath, "scripts") + '"', function(err, stdout, stderr) {
                             if (err) {
                                 console.error(stdout);
                                 console.error(stderr);
                                 return callback(err);
                             }
 
-                            return EXEC('cp -Rf "' + PATH.join(tmpPath, "build") + '" "' + PATH.join(tmpPath, "install") + '"', function(err, stdout, stderr) {
+                            return EXEC('cp -Rdf "' + PATH.join(tmpPath, "build") + '" "' + PATH.join(tmpPath, "install") + '"', function(err, stdout, stderr) {
                                 if (err) {
                                     console.error(stdout);
                                     console.error(stderr);
@@ -602,6 +719,7 @@ return callback(null);
     }
 
     function run(deploymentPath, configInfo) {
+        console.log("[pio.postdeploy] run", deploymentPath);
         return Q.fcall(function() {
             console.log(("Taking live '" + deploymentPath + "' by linking to '" + livePath + "'").magenta);
             // Take sevice live.
@@ -748,8 +866,13 @@ var walk = function(dir, subpath, done) {
     list.forEach(function(filename) {
       var path = subpath + '/' + filename;
       FS.stat(dir + path, function(err, stat) {
+        if (err) {
+            results.push(path);
+            return;
+        }
         if (stat && stat.isDirectory()) {
           walk(dir, path, function(err, res) {
+            if (err) return done(err);
             results = results.concat(res);
             if (!--pending) done(null, results);
           });
