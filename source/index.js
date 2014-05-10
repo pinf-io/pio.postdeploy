@@ -232,13 +232,14 @@ exports.postdeploy = function(serviceBasePath) {
                     // TODO: Put this into a plugin.
                     function replaceScriptVariables(callback) {
                         console.log("Using http://olado.github.io/doT/ to replace variables in: " + PATH.join(tmpPath, "scripts"));
-                        console.log("variables", configInfo.json);
+// TODO: Need to sanitize before printing!
+//                        console.log("variables", configInfo.json);
                         return Q.denodeify(walk)(PATH.join(tmpPath, "scripts")).then(function(filelist) {
                             function replaceInFile(path) {
                                 return Q.denodeify(function(callback) {
                                     return FS.readFile(PATH.join(tmpPath, "scripts", path), "utf8", function(err, templateSource) {
                                         if (err) return callback(err);
-                                        console.log("Replacing varibales in: " + PATH.join(tmpPath, "scripts", path));
+//                                        console.log("Replacing varibales in: " + PATH.join(tmpPath, "scripts", path));
                                         // TODO: Get own instance: https://github.com/olado/doT/issues/112
                                         DOT.templateSettings.strip = false;
                                         DOT.templateSettings.varname = "service";
