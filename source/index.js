@@ -436,7 +436,7 @@ return callback(null);
                         }
                         var downloader = getClient().download(cacheUri.split("/").slice(1).join("/"), archivePath);
                         downloader.on('error', function(err) {
-                            if (/404/.test(err.message)) {
+                            if (/404/.test(err.message) || /403/.test(err.message)) {
                                 console.log("Archive not found in online cache.");
                                 return callback(null, null);
                             }
