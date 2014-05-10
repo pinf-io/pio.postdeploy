@@ -810,6 +810,13 @@ return callback(null);
                                 "basePath": PATH.join(serviceBasePath, "live/install")
                             }
                         }
+                    },
+                    "smi.cli": {
+                        "aspects": {
+                            "install": {
+                                "basePath": PATH.join(serviceBasePath, "live/install")
+                            }
+                        }
                     }
                 }
             }, null, 4));
