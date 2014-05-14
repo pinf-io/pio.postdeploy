@@ -796,7 +796,8 @@ return callback(null);
                 return Q.all(all);
             });
         }).then(function() {
-            FS.outputFileSync(PATH.join(serviceBasePath, "package.json"), JSON.stringify({
+            // TODO: This should be done via a PINF abstraction.
+            var descriptor = {
                 "config": {
                     "pio.service": {
                         "basePath": serviceBasePath,
@@ -820,7 +821,14 @@ return callback(null);
                         }
                     }
                 }
-            }, null, 4));
+            };
+            if (
+                configInfo.json.config["pio.service"].sourceDescriptor &&
+                configInfo.json.config["pio.service"].sourceDescriptor["config.plugin"]
+            ) {
+                descriptor["config.plugin"] = configInfo.json.config["pio.service"].sourceDescriptor["config.plugin"];
+            }        
+            FS.outputFileSync(PATH.join(serviceBasePath, "package.json"), JSON.stringify(descriptor, null, 4));
         });
     }
 
