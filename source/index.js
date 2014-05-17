@@ -376,6 +376,12 @@ exports.postdeploy = function(serviceBasePath) {
                 function checkInstallCache(callback) {
 
                     function getClient() {
+                        if (
+                            !pioConfig.env.AWS_ACCESS_KEY ||
+                            !pioConfig.env.AWS_SECRET_KEY
+                        ) {
+                            return null;
+                        }
                         return S3.createClient({
                             key: pioConfig.env.AWS_ACCESS_KEY,
                             secret: pioConfig.env.AWS_SECRET_KEY,
@@ -384,7 +390,11 @@ exports.postdeploy = function(serviceBasePath) {
                     }
 
                     function upload(callback) {
-                        var uploader = getClient().upload(archivePath, cacheUri.split("/").slice(1).join("/"), {
+                        var client = getClient();
+                        if (!client) {
+                            return callback(null);
+                        }
+                        var uploader = client.upload(archivePath, cacheUri.split("/").slice(1).join("/"), {
                             'Content-Type': 'application/x-tar',
                             'x-amz-acl': 'private'
                         });
@@ -431,11 +441,15 @@ return callback(null);
                     console.log(("Checking AWS S3 for install cache: " + cacheUri).cyan);
 
                     function download(callback) {
+                        var client = getClient();
+                        if (!client) {
+                            return callback(null, null);
+                        }
                         console.log("Check if archive exists online: " + cacheUri.split("/").slice(1).join("/"));
                         if (!FS.existsSync(PATH.dirname(archivePath))) {
                             FS.mkdirsSync(PATH.dirname(archivePath));
                         }
-                        var downloader = getClient().download(cacheUri.split("/").slice(1).join("/"), archivePath);
+                        var downloader = client.download(cacheUri.split("/").slice(1).join("/"), archivePath);
                         downloader.on('error', function(err) {
                             if (/404/.test(err.message) || /403/.test(err.message)) {
                                 console.log("Archive not found in online cache.");
