@@ -21,6 +21,7 @@ cp sync/.pio.json configured/$CONFIGURED_DIR
 rm -f live || true
 ln -s configured/$CONFIGURED_DIR live
 
+sudo chmod -Rf ug+x $PIO_SCRIPTS_PATH
 
 rm -f ../../bin/pio-postdeploy || true
 ln -s $PIO_SERVICE_PATH/live/install/index.js ../../bin/pio-postdeploy
