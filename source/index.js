@@ -637,8 +637,13 @@ return callback(null);
                                 console.error(stderr);
                                 return callback(err);
                             }
-
-                            return EXEC('cp -Rdf "' + PATH.join(tmpPath, "build") + '" "' + PATH.join(tmpPath, "install") + '"', function(err, stdout, stderr) {
+                            var commands = [
+                                'cp -Rdf "' + PATH.join(tmpPath, "build") + '" "' + PATH.join(tmpPath, "install") + '"',
+                                // NOTE: When deploying as root we need to give the group write access to allow other processes to access the files.
+                                // TODO: Narrow down file access by using different users and groups for different services depending on their relationships.
+                                'chmod -Rf g+wx "' + PATH.join(tmpPath, "install") + '"'
+                            ];
+                            return EXEC(commands.join(";"), function(err, stdout, stderr) {
                                 if (err) {
                                     console.error(stdout);
                                     console.error(stderr);
