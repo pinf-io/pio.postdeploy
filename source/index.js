@@ -360,15 +360,16 @@ exports.postdeploy = function(serviceBasePath) {
                 ASSERT.equal(typeof configInfo.json.config.pio.serviceRepositoryUri, "string");
                 ASSERT.equal(typeof configInfo.json.config["pio.service"].id, "string");
 
-                var cacheUri =
-                    configInfo.json.config.pio.serviceRepositoryUri + "/" +
-                    configInfo.json.config["pio.service"].id + "-" +
-                    syncInfo.sourceHash.substring(0, 7) + "-build-" + process.platform + "-" + process.arch + ".tgz";
-
-                if (!/^https:\/\/s3\.amazonaws\.com\//.test(cacheUri)) {
-                    throw new Error("'config.pio.serviceRepositoryUri' must begin with 'https://s3.amazonaws.com/'");
-                } else {
-                    cacheUri = cacheUri.replace(/^https:\/\/s3\.amazonaws\.com\//, "");
+                var cacheUri = null;
+                if (configInfo.json.config.pio.serviceRepositoryUri) {
+                    cacheUri = configInfo.json.config.pio.serviceRepositoryUri + "/" +
+                               configInfo.json.config["pio.service"].id + "-" +
+                               syncInfo.sourceHash.substring(0, 7) + "-build-" + process.platform + "-" + process.arch + ".tgz";
+                    if (!/^https:\/\/s3\.amazonaws\.com\//.test(cacheUri)) {
+                        throw new Error("'config.pio.serviceRepositoryUri' must begin with 'https://s3.amazonaws.com/'");
+                    } else {
+                        cacheUri = cacheUri.replace(/^https:\/\/s3\.amazonaws\.com\//, "");
+                    }
                 }
 
                 var archivePath = tmpPath + ".tgz";
@@ -377,6 +378,7 @@ exports.postdeploy = function(serviceBasePath) {
 
                     function getClient() {
                         if (
+                            !cacheUri ||
                             !pioConfig.env.AWS_ACCESS_KEY ||
                             !pioConfig.env.AWS_SECRET_KEY
                         ) {
@@ -391,7 +393,7 @@ exports.postdeploy = function(serviceBasePath) {
 
                     function upload(callback) {
                         var client = getClient();
-                        if (!client) {
+                        if (!client || !cacheUri) {
                             return callback(null);
                         }
                         var uploader = client.upload(archivePath, cacheUri.split("/").slice(1).join("/"), {
@@ -434,15 +436,19 @@ return callback(null);
                     }
 
                     if (process.env.PIO_FORCE) {
-                        console.log(("Skip checking AWS S3 for install cache '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                        if (cacheUri) {
+                            console.log(("Skip checking AWS S3 for install cache '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                        }
                         return returnNotFound(callback);
                     }
 
-                    console.log(("Checking AWS S3 for install cache: " + cacheUri).cyan);
+                    if (cacheUri) {
+                        console.log(("Checking AWS S3 for install cache: " + cacheUri).cyan);
+                    }
 
                     function download(callback) {
                         var client = getClient();
-                        if (!client) {
+                        if (!client || !cacheUri) {
                             return callback(null, null);
                         }
                         console.log("Check if archive exists online: " + cacheUri.split("/").slice(1).join("/"));
