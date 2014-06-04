@@ -4,12 +4,13 @@ const ASSERT = require("assert");
 const PATH = require("path");
 const FS = require("fs-extra");
 const Q = require("q");
+const QUERYSTRING = require("querystring");
+const REQUEST = require("request");
 const DIRSUM = require("dirsum");
 const CRYPTO = require("crypto");
 const EXEC = require("child_process").exec;
 const SPAWN = require("child_process").spawn;
 const COLORS = require("colors");
-const S3 = require("s3");
 const DOT = require("dot");
 
 COLORS.setTheme({
@@ -360,123 +361,107 @@ exports.postdeploy = function(serviceBasePath) {
                 ASSERT.equal(typeof configInfo.json.config.pio.serviceRepositoryUri, "string");
                 ASSERT.equal(typeof configInfo.json.config["pio.service"].id, "string");
 
+                function onlyBestAspects(aspects) {
+                    var best = {};
+                    for (var name1 in aspects) {
+                        var m1 = name1.match(/^([^\[]+)(:?\[([^\]]+)\])?$/);
+                        if (m1) {
+                            if (!best[m1[1]]) {
+                                // We pick the first aspect with matching query.
+                                for (var name2 in aspects) {
+                                    var m2 = name2.match(/^([^\[]+)\[([^\]]+)\]$/);
+                                    if (m2) {
+                                        var qs = QUERYSTRING.parse(m2[2]);
+                                        var ok = true;
+                                        for (var key in qs) {
+                                            if (process[key] !== qs[key]) {
+                                                ok = false;
+                                            }
+                                        }
+                                        if (ok) {
+                                            best[m1[1]] = aspects[name2];
+                                            break;
+                                        }
+                                    }
+                                }
+                                // If no aspects with matching query found we return default.
+                                if (aspects[m1[1]]) {
+                                    best[m1[1]] = aspects[m1[1]];
+                                }
+                            }
+                        } else {
+                            console.error("Warning: ignoring aspect '" + name1 + "' due to malformed syntax!");
+                        }
+                    }
+                    return best;
+                }
+
                 var cacheUri = null;
-                if (configInfo.json.config.pio.serviceRepositoryUri) {
-                    cacheUri = configInfo.json.config.pio.serviceRepositoryUri + "/" +
-                               configInfo.json.config["pio.service"].id + "-" +
-                               syncInfo.sourceHash.substring(0, 7) + "-build-" + process.platform + "-" + process.arch + ".tgz";
-                    if (!/^https:\/\/s3\.amazonaws\.com\//.test(cacheUri)) {
-                        throw new Error("'config.pio.serviceRepositoryUri' must begin with 'https://s3.amazonaws.com/'");
-                    } else {
-                        cacheUri = cacheUri.replace(/^https:\/\/s3\.amazonaws\.com\//, "");
+                if (configInfo.json.config && configInfo.json.config["smi.cli"] && configInfo.json.config["smi.cli"].aspects) {
+                    var aspects = onlyBestAspects(configInfo.json.config["smi.cli"].aspects);
+                    if (aspects["build"]) {
+                        cacheUri = aspects["build"];
                     }
                 }
 
-                var archivePath = tmpPath + ".tgz";
+                var archivePath = PATH.join(tmpPath, PATH.basename(cacheUri));
 
                 function checkInstallCache(callback) {
-
-                    function getClient() {
-                        if (
-                            !cacheUri ||
-                            !pioConfig.env.AWS_ACCESS_KEY ||
-                            !pioConfig.env.AWS_SECRET_KEY
-                        ) {
-                            return null;
-                        }
-                        return S3.createClient({
-                            key: pioConfig.env.AWS_ACCESS_KEY,
-                            secret: pioConfig.env.AWS_SECRET_KEY,
-                            bucket: cacheUri.split("/").shift()
-                        });
-                    }
-
-                    function upload(callback) {
-                        var client = getClient();
-                        if (!client || !cacheUri) {
-                            return callback(null);
-                        }
-                        var uploader = client.upload(archivePath, cacheUri.split("/").slice(1).join("/"), {
-                            'Content-Type': 'application/x-tar',
-                            'x-amz-acl': 'private'
-                        });
-                        uploader.on('error', callback);
-                        uploader.on('progress', function(amountDone, amountTotal) {
-                            console.log("upload progress", amountDone, amountTotal);
-                        });
-                        uploader.on('end', function(url) {
-                            console.log("Uploaded: " + url);
-                            return callback(null);
-                        });
-                    }
 
                     function returnNotFound(callback) {
                         return callback(null, {
                             provisioned: false,
                             upload: function(callback) {
-
-// TODO: Run separately as plugin on `publish`.
-return callback(null);
-
-                                console.log(("Creating archive '" + archivePath + "' from install '" + tmpPath + "'").magenta);
-                                
-                                return EXEC('tar --dereference -zcf "' + PATH.basename(archivePath) + '" -C "' + PATH.dirname(tmpPath) + '/" "' + PATH.basename(tmpPath) + '"', {
-                                    cwd: PATH.dirname(archivePath)
-                                }, function(err, stdout, stderr) {
-                                    if (err) {
-                                        process.stderr.write(stdout);
-                                        process.stderr.write(stderr);
-                                        return callback(err);
-                                    }
-                                    console.log("Archive created. Uploading to S3.".magenta);
-                                    return upload(callback);
-                                });
+                                // NOTE: This now runs as part of pio.publish!
+                                return callback(null);
                             }
                         });
-                    }
-
-                    if (process.env.PIO_FORCE) {
-                        if (cacheUri) {
-                            console.log(("Skip checking AWS S3 for install cache '" + cacheUri + "' due to PIO_FORCE!").yellow);
-                        }
-                        return returnNotFound(callback);
-                    }
-
-                    if (cacheUri) {
-                        console.log(("Checking AWS S3 for install cache: " + cacheUri).cyan);
                     }
 
                     function download(callback) {
-                        var client = getClient();
-                        if (!client || !cacheUri) {
+                        if (!cacheUri) {
                             return callback(null, null);
                         }
-                        console.log("Check if archive exists online: " + cacheUri.split("/").slice(1).join("/"));
+                        if (process.env.PIO_FORCE) {
+                            if (cacheUri) {
+                                console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                            }
+                            return callback(null, null);
+                        }
+
+                        console.log(("Downloading existing build from '" + cacheUri + "'!").magenta);
+
                         if (!FS.existsSync(PATH.dirname(archivePath))) {
                             FS.mkdirsSync(PATH.dirname(archivePath));
                         }
-                        var downloader = client.download(cacheUri.split("/").slice(1).join("/"), archivePath);
-                        downloader.on('error', function(err) {
-                            if (/404/.test(err.message) || /403/.test(err.message)) {
-                                console.log("Archive not found in online cache.");
-                                return callback(null, null);
+
+                        var tmpPath = archivePath + "~" + Date.now();
+                        return REQUEST({
+                            url: cacheUri
+                        }, function (err, response) {
+                            if (err) {
+                                console.log("Error downloading '" + cacheUri + "':", err.stack);
+                                // TODO: Optionally skip download and compile from source?
+                                return callback(err);
                             }
-                            return callback(err);
-                        });
-                        downloader.on('progress', function(amountDone, amountTotal) {
-                            console.log("download progress", amountDone, amountTotal);
-                        });
-                        return downloader.on('end', function() {
-                            return callback(null, archivePath);
-                        });
+                            if (response.statusCode !== 200) {
+                                // TODO: Optionally skip download and compile from source?
+                                return callback(new Error("Error: Got status '" + response.statusCode + "' while downloading '" + cacheUri + "'"));
+                            }
+                            console.log(("Successfully downloaded existing build from '" + cacheUri + "' to '" + archivePath + "'").green);
+                            return FS.rename(tmpPath, archivePath, function(err) {
+                                if (err) return callback(err);
+                                return callback(null, archivePath);
+                            });
+                        }).pipe(FS.createWriteStream(tmpPath));
                     }
 
                     return download(function(err, downloadedArchivePath) {
                         if (err) return callback(err);
                         if (downloadedArchivePath) {
-                            console.log("Extract '" + archivePath + "' to '" + tmpPath + "'");
-                            FS.mkdirsSync(tmpPath);
-                            return EXEC('tar -xzf "' + PATH.basename(archivePath) + '" --strip 1 -C "' + tmpPath + '/"', {
+                            console.log("Extract '" + archivePath + "' to '" + PATH.join(tmpPath, "build") + "'");
+                            FS.mkdirsSync(PATH.join(tmpPath, "build"));
+                            return EXEC('tar -xzf "' + PATH.basename(archivePath) + '" --strip 1 -C "' + PATH.join(tmpPath, "build") + '"', {
                                 cwd: PATH.dirname(archivePath)
                             }, function(err, stdout, stderr) {
                                 if (err) {
@@ -490,12 +475,9 @@ return callback(null);
                                         return callback(err);
                                     });
                                 }
-                                console.log("Archive extracted to: " + tmpPath);
-                                return FS.rename(tmpPath, builtPath, function(err) {
-                                    if (err) return callback(err);
-                                    return callback(null, {
-                                        provisioned: true
-                                    });
+                                console.log("Archive extracted to: " + PATH.join(tmpPath, "build"));
+                                return callback(null, {
+                                    provisioned: true
                                 });
                             });
                         }
@@ -505,16 +487,30 @@ return callback(null);
 
                 return checkInstallCache(function(err, cacheInfo) {
                     if (err) return callback(err);
-                    if (cacheInfo.provisioned) {
-                        console.log("Using built cache: " + builtPath);
-                        return callback(null, builtPath);
-                    }
-                    console.log("Installing ...".magenta);
-                    FS.mkdirsSync(tmpPath);
                     FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), [
                         '#!/bin/sh -e',
                         '. /opt/bin/activate.sh'
                     ].join("\n"));
+
+                    console.log("Linking '" + PATH.join(preparedPath, "source") + "' to '" + PATH.join(tmpPath, "source") + "'");
+                    FS.symlinkSync(PATH.relative(PATH.join(tmpPath), PATH.join(preparedPath, "source")), PATH.join(tmpPath, "source"));
+                    if (!FS.existsSync(PATH.join(tmpPath, "bin"))) {
+                        FS.mkdirsSync(PATH.join(tmpPath, "bin"));
+                    }
+
+                    if (cacheInfo.provisioned) {
+                        FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
+                        console.log("No need to install. Using built cache: " + builtPath);
+                        return FS.rename(tmpPath, builtPath, function(err) {
+                            if (err) return callback(err);
+                            return callback(null, builtPath);
+                        });
+                    }
+
+                    console.log("Installing ...".magenta);
+                    if (!FS.existsSync(tmpPath)) {
+                        FS.mkdirsSync(tmpPath);
+                    }
                     return EXEC('cp -Rdf "' + PATH.join(preparedPath, "source") + '" "' + PATH.join(tmpPath, "build") + '"', function(err, stdout, stderr) {
                         if (err) {
                             console.error(stdout);
@@ -522,11 +518,7 @@ return callback(null);
                             return callback(err);
                         }
                         FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
-                        console.log("Linking '" + PATH.join(preparedPath, "source") + "' to '" + PATH.join(tmpPath, "source") + "'");
-                        FS.symlinkSync(PATH.relative(PATH.join(tmpPath), PATH.join(preparedPath, "source")), PATH.join(tmpPath, "source"));
-                        if (!FS.existsSync(PATH.join(tmpPath, "bin"))) {
-                            FS.mkdirsSync(PATH.join(tmpPath, "bin"));
-                        }
+
                         var execEnv = {};
                         for (var name in configInfo.json.env) {
                             execEnv[name] = configInfo.json.env[name];
