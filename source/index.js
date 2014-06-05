@@ -330,7 +330,7 @@ exports.postdeploy = function(serviceBasePath) {
 
 	function build(preparedPath, builtPath, syncInfo, configInfo) {
         console.log("[pio.postdeploy] build", preparedPath, builtPath);
-        var tmpPath = builtPath + "~" + Date.now();
+        var tmpPath = builtPath;// + "~" + Date.now();
         return Q.denodeify(function(callback) {
             function checkExisting(callback) {
                 return FS.exists(builtPath, function(exists) {
@@ -407,27 +407,28 @@ exports.postdeploy = function(serviceBasePath) {
                 var archivePath = PATH.join(tmpPath, PATH.basename(cacheUri));
 
                 function checkInstallCache(callback) {
-
-                    function returnNotFound(callback) {
-                        return callback(null, {
-                            provisioned: false,
-                            upload: function(callback) {
-                                // NOTE: This now runs as part of pio.publish!
-                                return callback(null);
-                            }
-                        });
+                    if (!cacheUri) {
+                        return callback(null, false);
+                    }
+                    if (process.env.PIO_FORCE) {
+                        if (cacheUri) {
+                            console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                        }
+                        return callback(null, false);
+                    }
+                    if (
+                        configInfo.json.config["pio.service"].config &&
+                        configInfo.json.config["pio.service"].config["smi.cli"] &&
+                        configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum &&
+                        configInfo.json.config["pio.service"].config.finalChecksum
+                    ) {
+                        if (configInfo.json.config["pio.service"].config.finalChecksum !== configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum) {
+                            console.log(("Skip downloading existing build from '" + cacheUri + "'. finalChecksum does not match!").yellow);
+                            return callback(null, false);
+                        }
                     }
 
                     function download(callback) {
-                        if (!cacheUri) {
-                            return callback(null, null);
-                        }
-                        if (process.env.PIO_FORCE) {
-                            if (cacheUri) {
-                                console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
-                            }
-                            return callback(null, null);
-                        }
 
                         console.log(("Downloading existing build from '" + cacheUri + "'!").magenta);
 
@@ -476,16 +477,14 @@ exports.postdeploy = function(serviceBasePath) {
                                     });
                                 }
                                 console.log("Archive extracted to: " + PATH.join(tmpPath, "build"));
-                                return callback(null, {
-                                    provisioned: true
-                                });
+                                return callback(null, true);
                             });
                         }
-                        return returnNotFound(callback);
+                        return callback(null, false);
                     });
                 }
 
-                return checkInstallCache(function(err, cacheInfo) {
+                return checkInstallCache(function(err, installCacheExists) {
                     if (err) return callback(err);
                     FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), [
                         '#!/bin/sh -e',
@@ -498,13 +497,13 @@ exports.postdeploy = function(serviceBasePath) {
                         FS.mkdirsSync(PATH.join(tmpPath, "bin"));
                     }
 
-                    if (cacheInfo.provisioned) {
+                    if (installCacheExists) {
                         FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
                         console.log("No need to install. Using built cache: " + builtPath);
-                        return FS.rename(tmpPath, builtPath, function(err) {
-                            if (err) return callback(err);
+//                        return FS.rename(tmpPath, builtPath, function(err) {
+//                            if (err) return callback(err);
                             return callback(null, builtPath);
-                        });
+//                        });
                     }
 
                     console.log("Installing ...".magenta);
@@ -546,13 +545,10 @@ exports.postdeploy = function(serviceBasePath) {
                                 console.error("ERROR: Install script exited with code '" + code + "'");
                                 return callback(new Error("Install script exited with code '" + code + "'"));
                             }
-                            return cacheInfo.upload(function(err) {
-                                if (err) return callback(err);
-                                return FS.rename(tmpPath, builtPath, function(err) {
-                                    if (err) return callback(err);
-                                    return callback(null, builtPath);
-                                });
-                            });
+//                            return FS.rename(tmpPath, builtPath, function(err) {
+//                                if (err) return callback(err);
+                                return callback(null, builtPath);
+//                            });
                         });
                     });
                 });
@@ -657,8 +653,9 @@ exports.postdeploy = function(serviceBasePath) {
                                         execEnv.PIO_CONFIG_PATH = PATH.join(tmpPath, PATH.basename(configPath));
                                         execEnv.PIO_SCRIPTS_PATH = PATH.join(tmpPath, "scripts");
                                         execEnv.PIO_SERVICE_PATH = tmpPath;
+                                        execEnv.PIO_BUILT_PATH = builtPath;
                                         execEnv.HOME = process.env.HOME;
-    //console.log("configure execEnv", execEnv);
+//console.log("configure execEnv", execEnv);
                                         var proc = SPAWN("sh", [
                                             PATH.join(tmpPath, "scripts", "configure.sh")
                                         ], {
@@ -853,10 +850,11 @@ exports.postdeploy = function(serviceBasePath) {
 
     	return scanSync().then(function(syncInfo) {
 
-            var preparedPath = PATH.join(preparedBasePath, syncInfo.scriptsHash + "-" + syncInfo.sourceHash);
-            var builtPath = PATH.join(builtBasePath, syncInfo.scriptsHash + "-" + syncInfo.sourceHash);
-
             return scanConfig().then(function(configInfo) {
+
+                // TODO: Calculate prepared hash instead of re-using finalChecksum.
+                var preparedPath = PATH.join(preparedBasePath, configInfo.json.config["pio.service"].finalChecksum + "-" + configInfo.json.config["pio.service"].finalChecksum);
+                var builtPath = PATH.join(builtBasePath, configInfo.json.config["pio.service"].finalChecksum + "-" + configInfo.json.config["pio.service"].finalChecksum);
 
                 return prepare(preparedPath, configInfo).then(function() {
 
@@ -870,7 +868,7 @@ exports.postdeploy = function(serviceBasePath) {
                         shasum.update(syncInfo.sourceHash + ":" + syncInfo.scriptsHash + ":" + configInfo.hash);
                         var deploymentPath = PATH.join(deploymentBasePath, shasum.digest("hex"));
 */
-                        var deploymentPath = PATH.join(deploymentBasePath, syncInfo.scriptsHash + "-" + syncInfo.sourceHash + "-" + configInfo.hash);
+                        var deploymentPath = PATH.join(deploymentBasePath, configInfo.json.config["pio.service"].finalChecksum + "-" + configInfo.json.config["pio.service"].finalChecksum + "-" + configInfo.hash);
                         console.log("Using deployment path: " + deploymentPath);
 
                         return configure(preparedPath, builtPath, deploymentPath, configInfo).then(function() {
