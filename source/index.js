@@ -2,7 +2,10 @@
 
 const ASSERT = require("assert");
 const PATH = require("path");
-const FS = require("fs-extra");
+const MFS = require("mfs");
+const FS = new MFS.FileFS({
+    lineinfo: true
+});
 const Q = require("q");
 const QUERYSTRING = require("querystring");
 const REQUEST = require("request");
@@ -19,6 +22,19 @@ COLORS.setTheme({
 
 
 exports.postdeploy = function(serviceBasePath) {
+
+    var options = {
+        force: process.env.PIO_FORCE || false,
+        verbose: process.env.PIO_VERBOSE || false,
+        debug: process.env.PIO_VERBOSE || process.env.PIO_DEBUG || false,
+        silent: process.env.PIO_SILENT || false
+    };
+
+    if (options.debug) {
+        FS.on("used-path", function(path, method, meta) {
+            console.log("[pio.postdeploy] FS." + method, path, "(" + meta.file + " @ " + meta.line + ")");
+        });
+    }
 
     var pioConfig = FS.readJsonSync(PATH.join(__dirname, "../.pio.json"));
 
@@ -178,7 +194,7 @@ exports.postdeploy = function(serviceBasePath) {
 
     function scanConfig() {
         console.log("[pio.postdeploy] scanConfig");
-        return Q.denodeify(FS.readJson)(configPath).then(function(config) {
+        return Q.nbind(FS.readJson, FS)(configPath).then(function(config) {
             var shasum = CRYPTO.createHash("sha1");
             shasum.update(JSON.stringify(config));
             return {
@@ -283,6 +299,10 @@ exports.postdeploy = function(serviceBasePath) {
                                     PIO_CONFIG_PATH: PATH.join(syncPath, ".pio.json"),
                                     PIO_SCRIPTS_PATH: PATH.join(tmpPath, "scripts"),
                                     PIO_SERVICE_PATH: tmpPath,
+                                    PIO_FORCE: options.force || false,
+                                    PIO_VERBOSE: options.verbose || false,
+                                    PIO_DEBUG: options.debug || false,
+                                    PIO_SILENT: options.silent || false,
                                     HOME: process.env.HOME
                                 }
                             });
@@ -526,6 +546,10 @@ exports.postdeploy = function(serviceBasePath) {
                         execEnv.PIO_CONFIG_PATH = PATH.join(syncPath, ".pio.json");
                         execEnv.PIO_SERVICE_PATH = tmpPath;
                         execEnv.PIO_SCRIPTS_PATH = PATH.join(preparedPath, "scripts");
+                        execEnv.PIO_FORCE = options.force || false;
+                        execEnv.PIO_VERBOSE = options.verbose || false;
+                        execEnv.PIO_DEBUG = options.debug || false;
+                        execEnv.PIO_SILENT = options.silent || false;
                         execEnv.HOME = process.env.HOME;
 
                         var proc = SPAWN("sh", [
@@ -654,6 +678,10 @@ exports.postdeploy = function(serviceBasePath) {
                                         execEnv.PIO_SCRIPTS_PATH = PATH.join(tmpPath, "scripts");
                                         execEnv.PIO_SERVICE_PATH = tmpPath;
                                         execEnv.PIO_BUILT_PATH = builtPath;
+                                        execEnv.PIO_FORCE = options.force || false;
+                                        execEnv.PIO_VERBOSE = options.verbose || false;
+                                        execEnv.PIO_DEBUG = options.debug || false;
+                                        execEnv.PIO_SILENT = options.silent || false;
                                         execEnv.HOME = process.env.HOME;
 //console.log("configure execEnv", execEnv);
                                         var proc = SPAWN("sh", [
@@ -758,6 +786,10 @@ exports.postdeploy = function(serviceBasePath) {
                 execEnv.PIO_CONFIG_PATH = PATH.join(livePath, ".pio.json");
                 execEnv.PIO_SERVICE_PATH = livePath;
                 execEnv.PIO_SCRIPTS_PATH = PATH.join(livePath, "scripts");
+                execEnv.PIO_FORCE = options.force || false;
+                execEnv.PIO_VERBOSE = options.verbose || false;
+                execEnv.PIO_DEBUG = options.debug || false;
+                execEnv.PIO_SILENT = options.silent || false;
                 execEnv.HOME = process.env.HOME;
 
                 var proc = SPAWN("sh", [
