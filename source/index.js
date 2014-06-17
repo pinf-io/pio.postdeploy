@@ -478,7 +478,14 @@ exports.postdeploy = function(serviceBasePath) {
                     }
 
                     return download(function(err, downloadedArchivePath) {
-                        if (err) return callback(err);
+                        if (err) {
+                            if (err.code === 404) {
+                                // We can ignore a missing archive as we can build from source.
+                                console.log("Warning: Ignoring missing archive cache error '" + err.message + "' as we can build from source.");
+                                return callback(null, false);
+                            }
+                            return callback(err);
+                        }
                         if (downloadedArchivePath) {
                             console.log("Extract '" + archivePath + "' to '" + PATH.join(tmpPath, "build") + "'");
                             FS.mkdirsSync(PATH.join(tmpPath, "build"));
@@ -578,7 +585,7 @@ exports.postdeploy = function(serviceBasePath) {
                 });
             });
         })().fail(function(err) {
-            var failedPath = tmpPath + ".failed";
+            var failedPath = tmpPath + ".failed~" + Date.now();
             // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
             if (FS.existsSync(tmpPath)) {
                 FS.renameSync(tmpPath, failedPath);
