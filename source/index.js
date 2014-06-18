@@ -458,16 +458,20 @@ exports.postdeploy = function(serviceBasePath) {
 
                         var tmpPath = archivePath + "~" + Date.now();
                         return REQUEST({
-                            url: cacheUri
+                            url: cacheUri,
+                            timeout: 15 * 1000
                         }, function (err, response) {
                             if (err) {
+console.log("ERR.code", err.code);
                                 console.log("Error downloading '" + cacheUri + "':", err.stack);
                                 // TODO: Optionally skip download and compile from source?
                                 return callback(err);
                             }
                             if (response.statusCode !== 200) {
                                 // TODO: Optionally skip download and compile from source?
-                                return callback(new Error("Error: Got status '" + response.statusCode + "' while downloading '" + cacheUri + "'"));
+                                var err = new Error("Error: Got status '" + response.statusCode + "' while downloading '" + cacheUri + "'");
+                                err.code = response.statusCode;
+                                return callback(err);
                             }
                             console.log(("Successfully downloaded existing build from '" + cacheUri + "' to '" + archivePath + "'").green);
                             return FS.rename(tmpPath, archivePath, function(err) {
