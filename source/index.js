@@ -367,6 +367,7 @@ exports.postdeploy = function(serviceBasePath) {
                             return callback(null, true);
                         });
                     } else {
+// TODO: Check for build, ok flag file.
                         console.log(("Skipping install. Found existing built cache at: " + builtPath).yellow);
                         return callback(null, false);
                     }
