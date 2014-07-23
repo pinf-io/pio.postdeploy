@@ -443,10 +443,13 @@ exports.postdeploy = function(serviceBasePath) {
                         configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum &&
                         configInfo.json.config["pio.service"].config.finalChecksum
                     ) {
+                        // TODO: Don't use the checksum calculated on deploy as it does not change when
+                        //       individual files are synced up. We need to calculate our own checksum based on what is in the sync folder.
                         if (configInfo.json.config["pio.service"].config.finalChecksum !== configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum) {
                             console.log(("Skip downloading existing build from '" + cacheUri + "'. finalChecksum does not match!").yellow);
                             return callback(null, false);
                         }
+                        console.log("Final checksum match:", configInfo.json.config["pio.service"].config.finalChecksum);
                     }
 
                     function download(callback) {
