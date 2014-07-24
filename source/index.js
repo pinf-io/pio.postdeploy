@@ -2,6 +2,7 @@
 
 const ASSERT = require("assert");
 const PATH = require("path");
+const ASYNC = require("async");
 const MFS = require("mfs");
 const FS = new MFS.FileFS({
     lineinfo: true
@@ -192,6 +193,57 @@ exports.postdeploy = function(serviceBasePath) {
 		})();
 	}
 
+    // @source http://stackoverflow.com/a/21260087/330439
+    function removeOldDirectories (inputDir, keepCount, callback) {
+        if (!FS.existsSync(inputDir)) {
+            return callback(null);
+        }
+        return FS.readdir(inputDir, function (err, files) {
+            if(err) {
+                return callback(err);
+            }
+            fileNames = files.map(function (fileName) {
+                return PATH.join(inputDir, fileName);   
+            });
+            ASYNC.map(fileNames, function (fileName, cb) {
+                return FS.stat(fileName, function (err, stat) {
+                    if(err) {
+                        return cb(err);
+                    };
+                    return cb(null, {
+                        name: fileName,
+                        isDirectory: stat.isDirectory(),
+                        time: stat.ctime,
+                    });
+                });
+            }, function (err, files) {
+                if(err) {
+                    return callback(err);
+                };
+                files = files.filter(function (file) {
+                    return file.isDirectory;
+                })
+                files.sort(function (filea, fileb) {
+                    return filea.time < fileb.time;
+                });
+                files = files.slice(keepCount);
+                ASYNC.map(files, function (file, cb) {
+                    return FS.remove(file.name, function (err) {
+                        if(err) {
+                            return cb(err);
+                        };
+                        return cb(null, file.name);
+                    });
+                }, function (err, removedFiles) {
+                    if(err) {
+                        return callback(err);
+                    }
+                    return callback(null, removedFiles);
+                });
+            });
+        });
+    }
+
     function scanConfig() {
         console.log("[pio.postdeploy] scanConfig");
         return Q.nbind(FS.readJson, FS)(configPath).then(function(config) {
@@ -207,104 +259,384 @@ exports.postdeploy = function(serviceBasePath) {
 
     function prepare(preparedPath, configInfo) {
         console.log("[pio.postdeploy] prepare", preparedPath);
-        var tmpPath = preparedPath + "~" + Date.now();
-        return Q.denodeify(function(callback) {
-            function checkExisting(callback) {
-                return FS.exists(preparedPath, function(exists) {
-                    if (!exists) {
-                        return callback(null, true);
-                    }
-                    if (process.env.PIO_FORCE) {
-                        console.log(("Skipping prepare. Found existing prepare cache at '" + preparedPath + "' BUT CONTINUING due to PIO_FORCE!").yellow);
-                        console.log("Removing old prepared path: " + preparedPath);
-                        return EXEC('chmod -Rf u+w ' + PATH.basename(preparedPath) + '; rm -Rf ' + PATH.basename(preparedPath), {
-                            cwd: PATH.dirname(preparedPath)
-                        }, function(err, stdout, stderr) {
-                            if (err) return callback(err);
-                            return callback(null, true);
-                        });
-                    } else {
-                        console.log(("Skipping prepare. Found existing prepare cache at: " + preparedPath).yellow);
-                        return callback(null, false);
-                    }
-                });
+        return Q.denodeify(removeOldDirectories)(preparedBasePath, 3).then(function(removed) {
+            if (removed) {
+                console.log("Removed directories: " + JSON.stringify(removed, null, 4));
             }
-            return checkExisting(function (err, proceed) {
-                if (err) return callback(err);
-                if (!proceed) {
-                    return callback(null, null);
-                }
-                console.log("Preparing ...".magenta);
-                if (!FS.existsSync(PATH.dirname(tmpPath))) {
-                    FS.mkdirsSync(PATH.dirname(tmpPath));
-                }
-                return EXEC('cp -Rdf "' + syncPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
-                    if (err) {
-                        console.error(stdout);
-                        console.error(stderr);
-                        return callback(err);
-                    }
-                    FS.unlinkSync(PATH.join(tmpPath, ".pio.json"));
-
-                    // TODO: Put this into a plugin.
-                    function replaceScriptVariables(callback) {
-                        console.log("Using http://olado.github.io/doT/ to replace variables in: " + PATH.join(tmpPath, "scripts"));
-// TODO: Need to sanitize before printing!
-//                        console.log("variables", configInfo.json);
-                        return Q.denodeify(walk)(PATH.join(tmpPath, "scripts")).then(function(filelist) {
-                            function replaceInFile(path) {
-                                return Q.denodeify(function(callback) {
-                                    return FS.readFile(PATH.join(tmpPath, "scripts", path), "utf8", function(err, templateSource) {
-                                        if (err) return callback(err);
-//                                        console.log("Replacing varibales in: " + PATH.join(tmpPath, "scripts", path));
-                                        // TODO: Get own instance: https://github.com/olado/doT/issues/112
-                                        DOT.templateSettings.strip = false;
-                                        DOT.templateSettings.varname = "service";
-                                        var compiled = DOT.template(templateSource);
-                                        var result = null;
-                                        try {
-                                            result = compiled(configInfo.json);
-                                        } catch(err) {
-                                            return callback(err);
-                                        }
-                                        FS.chmodSync(PATH.join(tmpPath, "scripts", path), 0744);
-                                        return FS.outputFile(PATH.join(tmpPath, "scripts", path), result, "utf8", function(err) {
-                                            if (err) return callback(err);                                            
-                                            return FS.chmod(PATH.join(tmpPath, "scripts", path), 0544, callback);
-                                        });
-                                    });
-                                })();
-                            }
-                            var all = [];
-                            filelist.forEach(function(path) {
-                                all.push(replaceInFile(path));   
+            return preparedPath;
+        }).then(function () {
+            var tmpPath = preparedPath + "~" + Date.now();
+            return Q.denodeify(function(callback) {
+                function checkExisting(callback) {
+                    return FS.exists(preparedPath, function(exists) {
+                        if (!exists) {
+                            return callback(null, true);
+                        }
+                        if (process.env.PIO_FORCE) {
+                            console.log(("Skipping prepare. Found existing prepare cache at '" + preparedPath + "' BUT CONTINUING due to PIO_FORCE!").yellow);
+                            console.log("Removing old prepared path: " + preparedPath);
+                            return EXEC('chmod -Rf u+w ' + PATH.basename(preparedPath) + '; rm -Rf ' + PATH.basename(preparedPath), {
+                                cwd: PATH.dirname(preparedPath)
+                            }, function(err, stdout, stderr) {
+                                if (err) return callback(err);
+                                return callback(null, true);
                             });
-                            return Q.all(all);
-                        }).then(function() {
-                            return callback(null);
-                        }).fail(callback);
+                        } else {
+                            console.log(("Skipping prepare. Found existing prepare cache at: " + preparedPath).yellow);
+                            return callback(null, false);
+                        }
+                    });
+                }
+                return checkExisting(function (err, proceed) {
+                    if (err) return callback(err);
+                    if (!proceed) {
+                        return callback(null, null);
+                    }
+                    console.log("Preparing ...".magenta);
+                    if (!FS.existsSync(PATH.dirname(tmpPath))) {
+                        FS.mkdirsSync(PATH.dirname(tmpPath));
+                    }
+                    return EXEC('cp -Rdf "' + syncPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
+                        if (err) {
+                            console.error(stdout);
+                            console.error(stderr);
+                            return callback(err);
+                        }
+                        FS.unlinkSync(PATH.join(tmpPath, ".pio.json"));
+
+                        // TODO: Put this into a plugin.
+                        function replaceScriptVariables(callback) {
+                            console.log("Using http://olado.github.io/doT/ to replace variables in: " + PATH.join(tmpPath, "scripts"));
+    // TODO: Need to sanitize before printing!
+    //                        console.log("variables", configInfo.json);
+                            return Q.denodeify(walk)(PATH.join(tmpPath, "scripts")).then(function(filelist) {
+                                function replaceInFile(path) {
+                                    return Q.denodeify(function(callback) {
+                                        return FS.readFile(PATH.join(tmpPath, "scripts", path), "utf8", function(err, templateSource) {
+                                            if (err) return callback(err);
+    //                                        console.log("Replacing varibales in: " + PATH.join(tmpPath, "scripts", path));
+                                            // TODO: Get own instance: https://github.com/olado/doT/issues/112
+                                            DOT.templateSettings.strip = false;
+                                            DOT.templateSettings.varname = "service";
+                                            var compiled = DOT.template(templateSource);
+                                            var result = null;
+                                            try {
+                                                result = compiled(configInfo.json);
+                                            } catch(err) {
+                                                return callback(err);
+                                            }
+                                            FS.chmodSync(PATH.join(tmpPath, "scripts", path), 0744);
+                                            return FS.outputFile(PATH.join(tmpPath, "scripts", path), result, "utf8", function(err) {
+                                                if (err) return callback(err);                                            
+                                                return FS.chmod(PATH.join(tmpPath, "scripts", path), 0544, callback);
+                                            });
+                                        });
+                                    })();
+                                }
+                                var all = [];
+                                filelist.forEach(function(path) {
+                                    all.push(replaceInFile(path));   
+                                });
+                                return Q.all(all);
+                            }).then(function() {
+                                return callback(null);
+                            }).fail(callback);
+                        }
+
+                        function prepare(callback) {
+                            return FS.exists(PATH.join(tmpPath, "scripts", "prepare.sh"), function(exists) {
+                                if (!exists) {
+                                    return callback(null);
+                                }
+                                var proc = SPAWN("sh", [
+                                    PATH.join(tmpPath, "scripts", "prepare.sh")
+                                ], {
+                                    cwd: PATH.join(tmpPath, "source"),
+                                    env: {
+                                        PATH: PATH.join(__dirname, "node_modules/.bin") + ":" + process.env.PATH,
+                                        PIO_CONFIG_PATH: PATH.join(syncPath, ".pio.json"),
+                                        PIO_SCRIPTS_PATH: PATH.join(tmpPath, "scripts"),
+                                        PIO_SERVICE_PATH: tmpPath,
+                                        PIO_FORCE: options.force || false,
+                                        PIO_VERBOSE: options.verbose || false,
+                                        PIO_DEBUG: options.debug || false,
+                                        PIO_SILENT: options.silent || false,
+                                        HOME: process.env.HOME
+                                    }
+                                });
+                                proc.stdout.on('data', function (data) {
+                                    process.stdout.write(data);
+                                });
+                                proc.stderr.on('data', function (data) {
+                                    process.stderr.write(data);
+                                });
+                                proc.on('close', function (code) {
+                                    if (code !== 0) {
+                                        console.error("ERROR: Prepare script exited with code '" + code + "'");
+                                        return callback(new Error("Prepare script exited with code '" + code + "'"));
+                                    }
+                                    return callback(null);
+                                });
+                            });
+                        }
+
+                        return replaceScriptVariables(function(err) {
+                            if (err) return callback(err);
+
+                            return prepare(function(err) {
+                                if (err) return callback(err);
+
+                                return FS.rename(tmpPath, preparedPath, function(err) {
+                                    if (err) return callback(err);
+
+                                    return callback(null, preparedPath);
+                                });
+                            });
+                        });
+                    });
+                });
+            })().fail(function(err) {
+                var failedPath = tmpPath + ".failed";
+                // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
+                if (FS.existsSync(tmpPath)) {
+                    FS.renameSync(tmpPath, failedPath);
+                }
+                console.log("Prepare Failed! Moving failed prepare to: " + failedPath);
+                throw err;
+            });
+        });
+    }
+
+	function build(preparedPath, builtPath, syncInfo, configInfo) {
+        console.log("[pio.postdeploy] build", preparedPath, builtPath);
+        return Q.denodeify(removeOldDirectories)(builtBasePath, 3).then(function(removed) {
+            if (removed) {
+                console.log("Removed directories: " + JSON.stringify(removed, null, 4));
+            }
+            return builtPath;
+        }).then(function () {    
+            var tmpPath = builtPath;// + "~" + Date.now();
+            return Q.denodeify(function(callback) {
+                function checkExisting(callback) {
+                    return FS.exists(builtPath, function(exists) {
+                        if (!exists) {
+                            return callback(null, true);
+                        }
+                        if (process.env.PIO_FORCE) {
+                            console.log(("Skipping install. Found existing built cache at '" + builtPath + "' BUT CONTINUING due to PIO_FORCE!").yellow);
+                            console.log("Removing old build path: " + builtPath);
+                            return EXEC('chmod -Rf u+w ' + PATH.basename(builtPath) + '; rm -Rf ' + PATH.basename(builtPath), {
+                                cwd: PATH.dirname(builtPath)
+                            }, function(err, stdout, stderr) {
+                                if (err) return callback(err);
+                                return callback(null, true);
+                            });
+                        } else {
+    // TODO: Check for build, ok flag file.
+                            console.log(("Skipping install. Found existing built cache at: " + builtPath).yellow);
+                            return callback(null, false);
+                        }
+                    });
+                }
+                return checkExisting(function(err, proceed) {
+                    if (err) return callback(err);
+                    if (!proceed) {
+                        return callback(null, null);
                     }
 
-                    function prepare(callback) {
-                        return FS.exists(PATH.join(tmpPath, "scripts", "prepare.sh"), function(exists) {
-                            if (!exists) {
-                                return callback(null);
-                            }
-                            var proc = SPAWN("sh", [
-                                PATH.join(tmpPath, "scripts", "prepare.sh")
-                            ], {
-                                cwd: PATH.join(tmpPath, "source"),
-                                env: {
-                                    PATH: PATH.join(__dirname, "node_modules/.bin") + ":" + process.env.PATH,
-                                    PIO_CONFIG_PATH: PATH.join(syncPath, ".pio.json"),
-                                    PIO_SCRIPTS_PATH: PATH.join(tmpPath, "scripts"),
-                                    PIO_SERVICE_PATH: tmpPath,
-                                    PIO_FORCE: options.force || false,
-                                    PIO_VERBOSE: options.verbose || false,
-                                    PIO_DEBUG: options.debug || false,
-                                    PIO_SILENT: options.silent || false,
-                                    HOME: process.env.HOME
+                    ASSERT.equal(typeof configInfo.json.config.pio.serviceRepositoryUri, "string");
+                    ASSERT.equal(typeof configInfo.json.config["pio.service"].id, "string");
+
+                    function onlyBestAspects(aspects) {
+                        var best = {};
+                        for (var name1 in aspects) {
+                            var m1 = name1.match(/^([^\[]+)(:?\[([^\]]+)\])?$/);
+                            if (m1) {
+                                if (!best[m1[1]]) {
+                                    // We pick the first aspect with matching query.
+                                    for (var name2 in aspects) {
+                                        var m2 = name2.match(/^([^\[]+)\[([^\]]+)\]$/);
+                                        if (m2) {
+                                            var qs = QUERYSTRING.parse(m2[2]);
+                                            var ok = true;
+                                            for (var key in qs) {
+                                                if (process[key] !== qs[key]) {
+                                                    ok = false;
+                                                }
+                                            }
+                                            if (ok) {
+                                                best[m1[1]] = aspects[name2];
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    // If no aspects with matching query found we return default.
+                                    if (aspects[m1[1]]) {
+                                        best[m1[1]] = aspects[m1[1]];
+                                    }
                                 }
+                            } else {
+                                console.error("Warning: ignoring aspect '" + name1 + "' due to malformed syntax!");
+                            }
+                        }
+                        return best;
+                    }
+
+                    var cacheUri = null;
+                    if (configInfo.json.config && configInfo.json.config["smi.cli"] && configInfo.json.config["smi.cli"].aspects) {
+                        var aspects = onlyBestAspects(configInfo.json.config["smi.cli"].aspects);
+                        if (aspects["build"]) {
+                            cacheUri = aspects["build"];
+                        }
+                    }
+
+                    var archivePath = PATH.join(tmpPath, PATH.basename(cacheUri));
+
+                    function checkInstallCache(callback) {
+                        if (!cacheUri) {
+                            return callback(null, false);
+                        }
+                        if (process.env.PIO_FORCE) {
+                            if (cacheUri) {
+                                console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                            }
+                            return callback(null, false);
+                        }
+                        if (
+                            configInfo.json.config["pio.service"].config &&
+                            configInfo.json.config["pio.service"].config["smi.cli"] &&
+                            configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum &&
+                            configInfo.json.config["pio.service"].config.finalChecksum
+                        ) {
+                            // TODO: Don't use the checksum calculated on deploy as it does not change when
+                            //       individual files are synced up. We need to calculate our own checksum based on what is in the sync folder.
+                            if (configInfo.json.config["pio.service"].config.finalChecksum !== configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum) {
+                                console.log(("Skip downloading existing build from '" + cacheUri + "'. finalChecksum does not match!").yellow);
+                                return callback(null, false);
+                            }
+                            console.log("Final checksum match:", configInfo.json.config["pio.service"].config.finalChecksum);
+                        }
+
+                        function download(callback) {
+
+                            console.log(("Downloading existing build from '" + cacheUri + "'!").magenta);
+
+                            if (!FS.existsSync(PATH.dirname(archivePath))) {
+                                FS.mkdirsSync(PATH.dirname(archivePath));
+                            }
+
+                            var tmpPath = archivePath + "~" + Date.now();
+                            return REQUEST({
+                                url: cacheUri,
+                                timeout: 15 * 1000
+                            }, function (err, response) {
+                                if (err) {
+    console.log("ERR.code", err.code);
+                                    console.log("Error downloading '" + cacheUri + "':", err.stack);
+                                    // TODO: Optionally skip download and compile from source?
+                                    return callback(err);
+                                }
+                                if (response.statusCode !== 200) {
+                                    // TODO: Optionally skip download and compile from source?
+                                    var err = new Error("Error: Got status '" + response.statusCode + "' while downloading '" + cacheUri + "'");
+                                    err.code = response.statusCode;
+                                    return callback(err);
+                                }
+                                console.log(("Successfully downloaded existing build from '" + cacheUri + "' to '" + archivePath + "'").green);
+                                return FS.rename(tmpPath, archivePath, function(err) {
+                                    if (err) return callback(err);
+                                    return callback(null, archivePath);
+                                });
+                            }).pipe(FS.createWriteStream(tmpPath));
+                        }
+
+                        return download(function(err, downloadedArchivePath) {
+                            if (err) {
+                                if (err.code === 404) {
+                                    // We can ignore a missing archive as we can build from source.
+                                    console.log("Warning: Ignoring missing archive cache error '" + err.message + "' as we can build from source.");
+                                    return callback(null, false);
+                                }
+                                return callback(err);
+                            }
+                            if (downloadedArchivePath) {
+                                console.log("Extract '" + archivePath + "' to '" + PATH.join(tmpPath, "build") + "'");
+                                FS.mkdirsSync(PATH.join(tmpPath, "build"));
+                                return EXEC('tar -xzf "' + PATH.basename(archivePath) + '" --strip 1 -C "' + PATH.join(tmpPath, "build") + '"', {
+                                    cwd: PATH.dirname(archivePath)
+                                }, function(err, stdout, stderr) {
+                                    if (err) {
+                                        console.log("Removing: " + archivePath)
+                                        return FS.remove(archivePath, function(err) {
+                                            if (err) {
+                                                console.error(err.stack);
+                                            }
+                                            process.stderr.write(stdout);
+                                            process.stderr.write(stderr);
+                                            return callback(err);
+                                        });
+                                    }
+                                    console.log("Archive extracted to: " + PATH.join(tmpPath, "build"));
+                                    return callback(null, true);
+                                });
+                            }
+                            return callback(null, false);
+                        });
+                    }
+
+                    return checkInstallCache(function(err, installCacheExists) {
+                        if (err) return callback(err);
+                        FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), [
+                            '#!/bin/sh -e',
+                            '. /opt/bin/activate.sh'
+                        ].join("\n"));
+
+                        console.log("Linking '" + PATH.join(preparedPath, "source") + "' to '" + PATH.join(tmpPath, "source") + "'");
+                        FS.symlinkSync(PATH.relative(PATH.join(tmpPath), PATH.join(preparedPath, "source")), PATH.join(tmpPath, "source"));
+                        if (!FS.existsSync(PATH.join(tmpPath, "bin"))) {
+                            FS.mkdirsSync(PATH.join(tmpPath, "bin"));
+                        }
+
+                        if (installCacheExists) {
+                            FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
+                            console.log("No need to install. Using built cache: " + builtPath);
+    //                        return FS.rename(tmpPath, builtPath, function(err) {
+    //                            if (err) return callback(err);
+                                return callback(null, builtPath);
+    //                        });
+                        }
+
+                        console.log("Installing ...".magenta);
+                        if (!FS.existsSync(tmpPath)) {
+                            FS.mkdirsSync(tmpPath);
+                        }
+                        return EXEC('cp -Rdf "' + PATH.join(preparedPath, "source") + '" "' + PATH.join(tmpPath, "build") + '"', function(err, stdout, stderr) {
+                            if (err) {
+                                console.error(stdout);
+                                console.error(stderr);
+                                return callback(err);
+                            }
+                            FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
+
+                            var execEnv = {};
+                            for (var name in configInfo.json.env) {
+                                execEnv[name] = configInfo.json.env[name];
+                            }
+                            execEnv.PATH = PATH.join(__dirname, "node_modules/.bin") + ":" + process.env.PATH;
+                            execEnv.PIO_CONFIG_PATH = PATH.join(syncPath, ".pio.json");
+                            execEnv.PIO_SERVICE_PATH = tmpPath;
+                            execEnv.PIO_SCRIPTS_PATH = PATH.join(preparedPath, "scripts");
+                            execEnv.PIO_FORCE = options.force || false;
+                            execEnv.PIO_VERBOSE = options.verbose || false;
+                            execEnv.PIO_DEBUG = options.debug || false;
+                            execEnv.PIO_SILENT = options.silent || false;
+                            execEnv.HOME = process.env.HOME;
+
+                            var proc = SPAWN("sh", [
+                                PATH.join(preparedPath, "scripts", "build.sh")
+                            ], {
+                                cwd: PATH.join(tmpPath, "build"),
+                                env: execEnv
                             });
                             proc.stdout.on('data', function (data) {
                                 process.stdout.write(data);
@@ -314,465 +646,205 @@ exports.postdeploy = function(serviceBasePath) {
                             });
                             proc.on('close', function (code) {
                                 if (code !== 0) {
-                                    console.error("ERROR: Prepare script exited with code '" + code + "'");
-                                    return callback(new Error("Prepare script exited with code '" + code + "'"));
+                                    console.error("ERROR: Install script exited with code '" + code + "'");
+                                    return callback(new Error("Install script exited with code '" + code + "'"));
                                 }
-                                return callback(null);
-                            });
-                        });
-                    }
-
-                    return replaceScriptVariables(function(err) {
-                        if (err) return callback(err);
-
-                        return prepare(function(err) {
-                            if (err) return callback(err);
-
-                            return FS.rename(tmpPath, preparedPath, function(err) {
-                                if (err) return callback(err);
-
-                                return callback(null, preparedPath);
+    //                            return FS.rename(tmpPath, builtPath, function(err) {
+    //                                if (err) return callback(err);
+                                    return callback(null, builtPath);
+    //                            });
                             });
                         });
                     });
                 });
+            })().fail(function(err) {
+                var failedPath = tmpPath + ".failed~" + Date.now();
+                // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
+                if (FS.existsSync(tmpPath)) {
+                    FS.renameSync(tmpPath, failedPath);
+                }
+                console.log("Build Failed! Moving failed build to: " + failedPath);
+                throw err;
             });
-        })().fail(function(err) {
-            var failedPath = tmpPath + ".failed";
-            // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
-            if (FS.existsSync(tmpPath)) {
-                FS.renameSync(tmpPath, failedPath);
-            }
-            console.log("Prepare Failed! Moving failed prepare to: " + failedPath);
-            throw err;
-        });
-    }
-
-	function build(preparedPath, builtPath, syncInfo, configInfo) {
-        console.log("[pio.postdeploy] build", preparedPath, builtPath);
-        var tmpPath = builtPath;// + "~" + Date.now();
-        return Q.denodeify(function(callback) {
-            function checkExisting(callback) {
-                return FS.exists(builtPath, function(exists) {
-                    if (!exists) {
-                        return callback(null, true);
-                    }
-                    if (process.env.PIO_FORCE) {
-                        console.log(("Skipping install. Found existing built cache at '" + builtPath + "' BUT CONTINUING due to PIO_FORCE!").yellow);
-                        console.log("Removing old build path: " + builtPath);
-                        return EXEC('chmod -Rf u+w ' + PATH.basename(builtPath) + '; rm -Rf ' + PATH.basename(builtPath), {
-                            cwd: PATH.dirname(builtPath)
-                        }, function(err, stdout, stderr) {
-                            if (err) return callback(err);
-                            return callback(null, true);
-                        });
-                    } else {
-// TODO: Check for build, ok flag file.
-                        console.log(("Skipping install. Found existing built cache at: " + builtPath).yellow);
-                        return callback(null, false);
-                    }
-                });
-            }
-            return checkExisting(function(err, proceed) {
-                if (err) return callback(err);
-                if (!proceed) {
-                    return callback(null, null);
-                }
-
-                ASSERT.equal(typeof configInfo.json.config.pio.serviceRepositoryUri, "string");
-                ASSERT.equal(typeof configInfo.json.config["pio.service"].id, "string");
-
-                function onlyBestAspects(aspects) {
-                    var best = {};
-                    for (var name1 in aspects) {
-                        var m1 = name1.match(/^([^\[]+)(:?\[([^\]]+)\])?$/);
-                        if (m1) {
-                            if (!best[m1[1]]) {
-                                // We pick the first aspect with matching query.
-                                for (var name2 in aspects) {
-                                    var m2 = name2.match(/^([^\[]+)\[([^\]]+)\]$/);
-                                    if (m2) {
-                                        var qs = QUERYSTRING.parse(m2[2]);
-                                        var ok = true;
-                                        for (var key in qs) {
-                                            if (process[key] !== qs[key]) {
-                                                ok = false;
-                                            }
-                                        }
-                                        if (ok) {
-                                            best[m1[1]] = aspects[name2];
-                                            break;
-                                        }
-                                    }
-                                }
-                                // If no aspects with matching query found we return default.
-                                if (aspects[m1[1]]) {
-                                    best[m1[1]] = aspects[m1[1]];
-                                }
-                            }
-                        } else {
-                            console.error("Warning: ignoring aspect '" + name1 + "' due to malformed syntax!");
-                        }
-                    }
-                    return best;
-                }
-
-                var cacheUri = null;
-                if (configInfo.json.config && configInfo.json.config["smi.cli"] && configInfo.json.config["smi.cli"].aspects) {
-                    var aspects = onlyBestAspects(configInfo.json.config["smi.cli"].aspects);
-                    if (aspects["build"]) {
-                        cacheUri = aspects["build"];
-                    }
-                }
-
-                var archivePath = PATH.join(tmpPath, PATH.basename(cacheUri));
-
-                function checkInstallCache(callback) {
-                    if (!cacheUri) {
-                        return callback(null, false);
-                    }
-                    if (process.env.PIO_FORCE) {
-                        if (cacheUri) {
-                            console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
-                        }
-                        return callback(null, false);
-                    }
-                    if (
-                        configInfo.json.config["pio.service"].config &&
-                        configInfo.json.config["pio.service"].config["smi.cli"] &&
-                        configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum &&
-                        configInfo.json.config["pio.service"].config.finalChecksum
-                    ) {
-                        // TODO: Don't use the checksum calculated on deploy as it does not change when
-                        //       individual files are synced up. We need to calculate our own checksum based on what is in the sync folder.
-                        if (configInfo.json.config["pio.service"].config.finalChecksum !== configInfo.json.config["pio.service"].config["smi.cli"].finalChecksum) {
-                            console.log(("Skip downloading existing build from '" + cacheUri + "'. finalChecksum does not match!").yellow);
-                            return callback(null, false);
-                        }
-                        console.log("Final checksum match:", configInfo.json.config["pio.service"].config.finalChecksum);
-                    }
-
-                    function download(callback) {
-
-                        console.log(("Downloading existing build from '" + cacheUri + "'!").magenta);
-
-                        if (!FS.existsSync(PATH.dirname(archivePath))) {
-                            FS.mkdirsSync(PATH.dirname(archivePath));
-                        }
-
-                        var tmpPath = archivePath + "~" + Date.now();
-                        return REQUEST({
-                            url: cacheUri,
-                            timeout: 15 * 1000
-                        }, function (err, response) {
-                            if (err) {
-console.log("ERR.code", err.code);
-                                console.log("Error downloading '" + cacheUri + "':", err.stack);
-                                // TODO: Optionally skip download and compile from source?
-                                return callback(err);
-                            }
-                            if (response.statusCode !== 200) {
-                                // TODO: Optionally skip download and compile from source?
-                                var err = new Error("Error: Got status '" + response.statusCode + "' while downloading '" + cacheUri + "'");
-                                err.code = response.statusCode;
-                                return callback(err);
-                            }
-                            console.log(("Successfully downloaded existing build from '" + cacheUri + "' to '" + archivePath + "'").green);
-                            return FS.rename(tmpPath, archivePath, function(err) {
-                                if (err) return callback(err);
-                                return callback(null, archivePath);
-                            });
-                        }).pipe(FS.createWriteStream(tmpPath));
-                    }
-
-                    return download(function(err, downloadedArchivePath) {
-                        if (err) {
-                            if (err.code === 404) {
-                                // We can ignore a missing archive as we can build from source.
-                                console.log("Warning: Ignoring missing archive cache error '" + err.message + "' as we can build from source.");
-                                return callback(null, false);
-                            }
-                            return callback(err);
-                        }
-                        if (downloadedArchivePath) {
-                            console.log("Extract '" + archivePath + "' to '" + PATH.join(tmpPath, "build") + "'");
-                            FS.mkdirsSync(PATH.join(tmpPath, "build"));
-                            return EXEC('tar -xzf "' + PATH.basename(archivePath) + '" --strip 1 -C "' + PATH.join(tmpPath, "build") + '"', {
-                                cwd: PATH.dirname(archivePath)
-                            }, function(err, stdout, stderr) {
-                                if (err) {
-                                    console.log("Removing: " + archivePath)
-                                    return FS.remove(archivePath, function(err) {
-                                        if (err) {
-                                            console.error(err.stack);
-                                        }
-                                        process.stderr.write(stdout);
-                                        process.stderr.write(stderr);
-                                        return callback(err);
-                                    });
-                                }
-                                console.log("Archive extracted to: " + PATH.join(tmpPath, "build"));
-                                return callback(null, true);
-                            });
-                        }
-                        return callback(null, false);
-                    });
-                }
-
-                return checkInstallCache(function(err, installCacheExists) {
-                    if (err) return callback(err);
-                    FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), [
-                        '#!/bin/sh -e',
-                        '. /opt/bin/activate.sh'
-                    ].join("\n"));
-
-                    console.log("Linking '" + PATH.join(preparedPath, "source") + "' to '" + PATH.join(tmpPath, "source") + "'");
-                    FS.symlinkSync(PATH.relative(PATH.join(tmpPath), PATH.join(preparedPath, "source")), PATH.join(tmpPath, "source"));
-                    if (!FS.existsSync(PATH.join(tmpPath, "bin"))) {
-                        FS.mkdirsSync(PATH.join(tmpPath, "bin"));
-                    }
-
-                    if (installCacheExists) {
-                        FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
-                        console.log("No need to install. Using built cache: " + builtPath);
-//                        return FS.rename(tmpPath, builtPath, function(err) {
-//                            if (err) return callback(err);
-                            return callback(null, builtPath);
-//                        });
-                    }
-
-                    console.log("Installing ...".magenta);
-                    if (!FS.existsSync(tmpPath)) {
-                        FS.mkdirsSync(tmpPath);
-                    }
-                    return EXEC('cp -Rdf "' + PATH.join(preparedPath, "source") + '" "' + PATH.join(tmpPath, "build") + '"', function(err, stdout, stderr) {
-                        if (err) {
-                            console.error(stdout);
-                            console.error(stderr);
-                            return callback(err);
-                        }
-                        FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
-
-                        var execEnv = {};
-                        for (var name in configInfo.json.env) {
-                            execEnv[name] = configInfo.json.env[name];
-                        }
-                        execEnv.PATH = PATH.join(__dirname, "node_modules/.bin") + ":" + process.env.PATH;
-                        execEnv.PIO_CONFIG_PATH = PATH.join(syncPath, ".pio.json");
-                        execEnv.PIO_SERVICE_PATH = tmpPath;
-                        execEnv.PIO_SCRIPTS_PATH = PATH.join(preparedPath, "scripts");
-                        execEnv.PIO_FORCE = options.force || false;
-                        execEnv.PIO_VERBOSE = options.verbose || false;
-                        execEnv.PIO_DEBUG = options.debug || false;
-                        execEnv.PIO_SILENT = options.silent || false;
-                        execEnv.HOME = process.env.HOME;
-
-                        var proc = SPAWN("sh", [
-                            PATH.join(preparedPath, "scripts", "build.sh")
-                        ], {
-                            cwd: PATH.join(tmpPath, "build"),
-                            env: execEnv
-                        });
-                        proc.stdout.on('data', function (data) {
-                            process.stdout.write(data);
-                        });
-                        proc.stderr.on('data', function (data) {
-                            process.stderr.write(data);
-                        });
-                        proc.on('close', function (code) {
-                            if (code !== 0) {
-                                console.error("ERROR: Install script exited with code '" + code + "'");
-                                return callback(new Error("Install script exited with code '" + code + "'"));
-                            }
-//                            return FS.rename(tmpPath, builtPath, function(err) {
-//                                if (err) return callback(err);
-                                return callback(null, builtPath);
-//                            });
-                        });
-                    });
-                });
-            });
-        })().fail(function(err) {
-            var failedPath = tmpPath + ".failed~" + Date.now();
-            // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
-            if (FS.existsSync(tmpPath)) {
-                FS.renameSync(tmpPath, failedPath);
-            }
-            console.log("Build Failed! Moving failed build to: " + failedPath);
-            throw err;
         });
 	}
 
     function configure(preparedPath, builtPath, deploymentPath, configInfo) {
         console.log("[pio.postdeploy] configure", preparedPath, builtPath, deploymentPath);
         var tmpPath = deploymentPath; // + "~" + Date.now();
-        return Q.denodeify(function(callback) {
-            function checkExisting(callback) {
-                return FS.exists(deploymentPath, function(exists) {
-                    if (!exists) {
-                        return callback(null, true);
-                    }
-                    if (process.env.PIO_FORCE) {
-                        console.log(("Skipping configure. Found existing configured cache at '" + deploymentPath + "' BUT CONTINUING due to PIO_FORCE!").yellow);
-                        console.log("Removing old deployment path: " + deploymentPath);
-                        return EXEC('chmod -Rf u+w ' + PATH.basename(deploymentPath) + '; rm -Rf ' + PATH.basename(deploymentPath), {
-                            cwd: PATH.dirname(deploymentPath)
-                        }, function(err, stdout, stderr) {
-                            if (err) return callback(err);
-                            return callback(null, true);
-                        });
-                    } else {
-                        console.log(("Skipping configure. Found existing configured cache at: " + deploymentPath).yellow);
-                        return callback(null, false);
-                    }
-                });
+        return Q.denodeify(removeOldDirectories)(deploymentBasePath, 3).then(function(removed) {
+            if (removed) {
+                console.log("Removed directories: " + JSON.stringify(removed, null, 4));
             }
-            return checkExisting(function(err, proceed) {
-                if (err) return callback(err);
-                if (!proceed) {
-                    return callback(null, null);
+        }).then(function() {
+            return Q.denodeify(function(callback) {
+                function checkExisting(callback) {
+                    return FS.exists(deploymentPath, function(exists) {
+                        if (!exists) {
+                            return callback(null, true);
+                        }
+                        if (process.env.PIO_FORCE) {
+                            console.log(("Skipping configure. Found existing configured cache at '" + deploymentPath + "' BUT CONTINUING due to PIO_FORCE!").yellow);
+                            console.log("Removing old deployment path: " + deploymentPath);
+                            return EXEC('chmod -Rf u+w ' + PATH.basename(deploymentPath) + '; rm -Rf ' + PATH.basename(deploymentPath), {
+                                cwd: PATH.dirname(deploymentPath)
+                            }, function(err, stdout, stderr) {
+                                if (err) return callback(err);
+                                return callback(null, true);
+                            });
+                        } else {
+                            console.log(("Skipping configure. Found existing configured cache at: " + deploymentPath).yellow);
+                            return callback(null, false);
+                        }
+                    });
                 }
-                console.log("Configuring ...".magenta);
-                FS.mkdirsSync(PATH.dirname(tmpPath));
-                return EXEC('cp -Rdf "' + builtPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
-                    if (err) {
-                        console.error(stdout);
-                        console.error(stderr);
-                        return callback(err);
+                return checkExisting(function(err, proceed) {
+                    if (err) return callback(err);
+                    if (!proceed) {
+                        return callback(null, null);
                     }
+                    console.log("Configuring ...".magenta);
+                    FS.mkdirsSync(PATH.dirname(tmpPath));
+                    return EXEC('cp -Rdf "' + builtPath + '" "' + tmpPath + '"', function(err, stdout, stderr) {
+                        if (err) {
+                            console.error(stdout);
+                            console.error(stderr);
+                            return callback(err);
+                        }
 
-                    var execEnv = {};
-                    var lines = [
-                        '#!/bin/sh -e',
-                        '. /opt/bin/activate.sh',
-                    ];
-                    for (var name in configInfo.json.env) {
-                        lines.push('export ' + name + '=' + configInfo.json.env[name]);
-                        execEnv[name] = configInfo.json.env[name];
-                    }
-                    if (typeof execEnv.PORT === "undefined") {
-                        lines.push('export PORT=""');
-                        execEnv.PORT = "";
-                    }
-                    ASSERT.equal(typeof configInfo.json.env.PATH, "string");
-                    lines.push('export PATH=' + PATH.join(tmpPath.replace(/~\d+$/, ""), "bin") + ':' + configInfo.json.env.PATH);
-//console.log("final activate lines", lines);
-                    FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), lines.join("\n"));
+                        var execEnv = {};
+                        var lines = [
+                            '#!/bin/sh -e',
+                            '. /opt/bin/activate.sh',
+                        ];
+                        for (var name in configInfo.json.env) {
+                            lines.push('export ' + name + '=' + configInfo.json.env[name]);
+                            execEnv[name] = configInfo.json.env[name];
+                        }
+                        if (typeof execEnv.PORT === "undefined") {
+                            lines.push('export PORT=""');
+                            execEnv.PORT = "";
+                        }
+                        ASSERT.equal(typeof configInfo.json.env.PATH, "string");
+                        lines.push('export PATH=' + PATH.join(tmpPath.replace(/~\d+$/, ""), "bin") + ':' + configInfo.json.env.PATH);
+    //console.log("final activate lines", lines);
+                        FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), lines.join("\n"));
 
-                    FS.outputFileSync(PATH.join(tmpPath, ".pio.json"), JSON.stringify(configInfo.json, null, 4));
+                        FS.outputFileSync(PATH.join(tmpPath, ".pio.json"), JSON.stringify(configInfo.json, null, 4));
 
-                    return FS.copy(configPath, PATH.join(tmpPath, PATH.basename(configPath)), function(err) {
-                        if (err) return callback(err);
+                        return FS.copy(configPath, PATH.join(tmpPath, PATH.basename(configPath)), function(err) {
+                            if (err) return callback(err);
 
-                        return EXEC('cp -Rdf "' + PATH.join(preparedPath, "scripts") + '" "' + PATH.join(tmpPath, "scripts") + '"', function(err, stdout, stderr) {
-                            if (err) {
-                                console.error(stdout);
-                                console.error(stderr);
-                                return callback(err);
-                            }
-                            var commands = [
-                                'cp -Rdf "' + PATH.join(tmpPath, "build") + '" "' + PATH.join(tmpPath, "install") + '"',
-                                // NOTE: When deploying as root we need to give the group write access to allow other processes to access the files.
-                                // TODO: Narrow down file access by using different users and groups for different services depending on their relationships.
-                                'chmod -Rf g+wx "' + PATH.join(tmpPath, "install") + '"'
-                            ];
-                            return EXEC(commands.join(";"), function(err, stdout, stderr) {
+                            return EXEC('cp -Rdf "' + PATH.join(preparedPath, "scripts") + '" "' + PATH.join(tmpPath, "scripts") + '"', function(err, stdout, stderr) {
                                 if (err) {
                                     console.error(stdout);
                                     console.error(stderr);
                                     return callback(err);
                                 }
-
-                                function configure(callback) {
-                                    return FS.exists(PATH.join(tmpPath, "scripts", "configure.sh"), function(exists) {
-                                        if (!exists) {
-                                            return callback(null);
-                                        }
-                                        execEnv.PATH = PATH.join(__dirname, "node_modules/.bin") + ":" + execEnv.PATH.replace("$PATH", process.env.PATH);
-                                        execEnv.PIO_CONFIG_PATH = PATH.join(tmpPath, PATH.basename(configPath));
-                                        execEnv.PIO_SCRIPTS_PATH = PATH.join(tmpPath, "scripts");
-                                        execEnv.PIO_SERVICE_PATH = tmpPath;
-                                        execEnv.PIO_BUILT_PATH = builtPath;
-                                        execEnv.PIO_FORCE = options.force || false;
-                                        execEnv.PIO_VERBOSE = options.verbose || false;
-                                        execEnv.PIO_DEBUG = options.debug || false;
-                                        execEnv.PIO_SILENT = options.silent || false;
-                                        execEnv.HOME = process.env.HOME;
-//console.log("configure execEnv", execEnv);
-                                        var proc = SPAWN("sh", [
-                                            PATH.join(tmpPath, "scripts", "configure.sh")
-                                        ], {
-                                            cwd: PATH.join(tmpPath, "install"),
-                                            env: execEnv
-                                        });
-                                        proc.stdout.on('data', function (data) {
-                                            process.stdout.write(data);
-                                        });
-                                        proc.stderr.on('data', function (data) {
-                                            process.stderr.write(data);
-                                        });
-                                        proc.on('close', function (code) {
-                                            if (code !== 0) {
-                                                console.error("ERROR: Configure script exited with code '" + code + "'");
-                                                return callback(new Error("Configure script exited with code '" + code + "'"));
-                                            }
-                                            return callback(null);
-                                        });
-                                    });
-                                }
-
-                                return configure(function(err) {
-                                    if (err) return callback(err);
-
-                                    function linkCommands() {
-                                        var all = [];
-                                        if (
-                                            configInfo.json.config["pio.service"].sourceDescriptor &&
-                                            configInfo.json.config["pio.service"].sourceDescriptor.bin
-                                        ) {
-                                            for (var name in configInfo.json.config["pio.service"].sourceDescriptor.bin) {
-                                                all.push(Q.denodeify(function(name, callback) {
-                                                    var linkPath = PATH.join(tmpPath, "bin", name);
-                                                    try {
-                                                        FS.unlinkSync(linkPath);
-                                                    } catch(err) {
-                                                        if (err.code !== "ENOENT") {
-                                                            return callback(err);
-                                                        }
-                                                    }
-                                                    try {
-                                                        var commandPath = PATH.join(tmpPath, "install", configInfo.json.config["pio.service"].sourceDescriptor.bin[name]);
-                                                        console.log("Linking " + commandPath + " to " + linkPath);
-                                                        FS.symlinkSync(PATH.relative(PATH.dirname(linkPath), commandPath), linkPath);
-                                                        return callback(null);
-                                                    } catch(err) {
-                                                        return callback(err);
-                                                    }
-                                                })(name));
-                                            }
-                                        }
-                                        return Q.all(all);                                    
+                                var commands = [
+                                    'cp -Rdf "' + PATH.join(tmpPath, "build") + '" "' + PATH.join(tmpPath, "install") + '"',
+                                    // NOTE: When deploying as root we need to give the group write access to allow other processes to access the files.
+                                    // TODO: Narrow down file access by using different users and groups for different services depending on their relationships.
+                                    'chmod -Rf g+wx "' + PATH.join(tmpPath, "install") + '"'
+                                ];
+                                return EXEC(commands.join(";"), function(err, stdout, stderr) {
+                                    if (err) {
+                                        console.error(stdout);
+                                        console.error(stderr);
+                                        return callback(err);
                                     }
 
-                                    return linkCommands().then(function() {
+                                    function configure(callback) {
+                                        return FS.exists(PATH.join(tmpPath, "scripts", "configure.sh"), function(exists) {
+                                            if (!exists) {
+                                                return callback(null);
+                                            }
+                                            execEnv.PATH = PATH.join(__dirname, "node_modules/.bin") + ":" + execEnv.PATH.replace("$PATH", process.env.PATH);
+                                            execEnv.PIO_CONFIG_PATH = PATH.join(tmpPath, PATH.basename(configPath));
+                                            execEnv.PIO_SCRIPTS_PATH = PATH.join(tmpPath, "scripts");
+                                            execEnv.PIO_SERVICE_PATH = tmpPath;
+                                            execEnv.PIO_BUILT_PATH = builtPath;
+                                            execEnv.PIO_FORCE = options.force || false;
+                                            execEnv.PIO_VERBOSE = options.verbose || false;
+                                            execEnv.PIO_DEBUG = options.debug || false;
+                                            execEnv.PIO_SILENT = options.silent || false;
+                                            execEnv.HOME = process.env.HOME;
+    //console.log("configure execEnv", execEnv);
+                                            var proc = SPAWN("sh", [
+                                                PATH.join(tmpPath, "scripts", "configure.sh")
+                                            ], {
+                                                cwd: PATH.join(tmpPath, "install"),
+                                                env: execEnv
+                                            });
+                                            proc.stdout.on('data', function (data) {
+                                                process.stdout.write(data);
+                                            });
+                                            proc.stderr.on('data', function (data) {
+                                                process.stderr.write(data);
+                                            });
+                                            proc.on('close', function (code) {
+                                                if (code !== 0) {
+                                                    console.error("ERROR: Configure script exited with code '" + code + "'");
+                                                    return callback(new Error("Configure script exited with code '" + code + "'"));
+                                                }
+                                                return callback(null);
+                                            });
+                                        });
+                                    }
 
-        //                            return FS.rename(tmpPath, deploymentPath, function(err) {
-        //                                if (err) return callback(err);
-                                        return callback(null, deploymentPath);
-        //                            });
-                                    }).fail(callback);
+                                    return configure(function(err) {
+                                        if (err) return callback(err);
+
+                                        function linkCommands() {
+                                            var all = [];
+                                            if (
+                                                configInfo.json.config["pio.service"].sourceDescriptor &&
+                                                configInfo.json.config["pio.service"].sourceDescriptor.bin
+                                            ) {
+                                                for (var name in configInfo.json.config["pio.service"].sourceDescriptor.bin) {
+                                                    all.push(Q.denodeify(function(name, callback) {
+                                                        var linkPath = PATH.join(tmpPath, "bin", name);
+                                                        try {
+                                                            FS.unlinkSync(linkPath);
+                                                        } catch(err) {
+                                                            if (err.code !== "ENOENT") {
+                                                                return callback(err);
+                                                            }
+                                                        }
+                                                        try {
+                                                            var commandPath = PATH.join(tmpPath, "install", configInfo.json.config["pio.service"].sourceDescriptor.bin[name]);
+                                                            console.log("Linking " + commandPath + " to " + linkPath);
+                                                            FS.symlinkSync(PATH.relative(PATH.dirname(linkPath), commandPath), linkPath);
+                                                            return callback(null);
+                                                        } catch(err) {
+                                                            return callback(err);
+                                                        }
+                                                    })(name));
+                                                }
+                                            }
+                                            return Q.all(all);                                    
+                                        }
+
+                                        return linkCommands().then(function() {
+
+            //                            return FS.rename(tmpPath, deploymentPath, function(err) {
+            //                                if (err) return callback(err);
+                                            return callback(null, deploymentPath);
+            //                            });
+                                        }).fail(callback);
+                                    });
                                 });
                             });
                         });
                     });
                 });
+            })().fail(function(err) {
+                var failedPath = tmpPath + ".failed";
+                // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
+                FS.renameSync(tmpPath, failedPath);
+                console.log("Configure Failed! Moving failed deployment to: " + failedPath);
+                throw err;
             });
-        })().fail(function(err) {
-            var failedPath = tmpPath + ".failed";
-            // TODO: Write our log with failure info tp `failedPath + '/.pio/error'
-            FS.renameSync(tmpPath, failedPath);
-            console.log("Configure Failed! Moving failed deployment to: " + failedPath);
-            throw err;
         });
     }
 
