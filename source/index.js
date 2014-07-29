@@ -230,6 +230,12 @@ exports.postdeploy = function(serviceBasePath) {
                 ASYNC.map(files, function (file, cb) {
                     return FS.remove(file.name, function (err) {
                         if(err) {
+                            if (err.code === "EACCES") {
+                                // Ignore for now.
+                                // TODO: Escalate permissions?
+                                console.log("WARN: Could not delete '" + file.name + "' due to EACCES!");
+                                return cb(null, file.name);
+                            }
                             return cb(err);
                         };
                         return cb(null, file.name);
