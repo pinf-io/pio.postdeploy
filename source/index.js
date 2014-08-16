@@ -438,9 +438,19 @@ exports.postdeploy = function(serviceBasePath) {
                                 return callback(null, true);
                             });
                         } else {
-    // TODO: Check for build, ok flag file.
-                            console.log(("Skipping install. Found existing built cache at: " + builtPath).yellow);
-                            return callback(null, false);
+                            return FS.exists(PATH.join(builtPath, ".success"), function (exists) {
+                                if (exists) {
+                                    console.log(("Skipping install. Found existing built cache at: " + builtPath).yellow);
+                                    return callback(null, false);
+                                }
+                                console.log(("Found existing built cache at '" + builtPath + "' but no success flag. So we remove old build and rebuild.").yellow);
+                                return EXEC('chmod -Rf u+w ' + PATH.basename(builtPath) + '; rm -Rf ' + PATH.basename(builtPath), {
+                                    cwd: PATH.dirname(builtPath)
+                                }, function(err, stdout, stderr) {
+                                    if (err) return callback(err);
+                                    return callback(null, true);
+                                });
+                            });
                         }
                     });
                 }
@@ -503,10 +513,16 @@ exports.postdeploy = function(serviceBasePath) {
                             return callback(null, false);
                         }
                         if (process.env.PIO_FORCE) {
-                            if (cacheUri) {
+                            if (
+                                configInfo.json.config["smi.cli"].syncInfo &&
+                                configInfo.json.config["smi.cli"].syncInfo.sourceHash === syncInfo.sourceHash &&
+                                configInfo.json.config["smi.cli"].syncInfo.scriptsHash === syncInfo.scriptsHash
+                            ) {
+                                console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE BUT CONTINUE as source and script hashes same as catalog!").yellow);
+                            } else {
                                 console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                                return callback(null, false);
                             }
-                            return callback(null, false);
                         }
                         if (
                             configInfo.json.config["pio.service"].config &&
@@ -606,10 +622,13 @@ exports.postdeploy = function(serviceBasePath) {
                         if (installCacheExists) {
                             FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
                             console.log("No need to install. Using built cache: " + builtPath);
+                            return FS.outputFile(PATH.join(builtPath, ".success"), "", "utf8", function(err) {
+                                if (err) return callback(err);
     //                        return FS.rename(tmpPath, builtPath, function(err) {
     //                            if (err) return callback(err);
                                 return callback(null, builtPath);
     //                        });
+                            });
                         }
 
                         console.log("Installing ...".magenta);
@@ -655,10 +674,13 @@ exports.postdeploy = function(serviceBasePath) {
                                     console.error("ERROR: Install script exited with code '" + code + "'");
                                     return callback(new Error("Install script exited with code '" + code + "'"));
                                 }
-    //                            return FS.rename(tmpPath, builtPath, function(err) {
-    //                                if (err) return callback(err);
-                                    return callback(null, builtPath);
-    //                            });
+                                return FS.outputFile(PATH.join(builtPath, ".success"), "", "utf8", function(err) {
+                                    if (err) return callback(err);
+        //                            return FS.rename(tmpPath, builtPath, function(err) {
+        //                                if (err) return callback(err);
+                                        return callback(null, builtPath);
+        //                            });
+                                });
                             });
                         });
                     });
@@ -675,7 +697,7 @@ exports.postdeploy = function(serviceBasePath) {
         });
 	}
 
-    function configure(preparedPath, builtPath, deploymentPath, configInfo) {
+    function configure(preparedPath, builtPath, deploymentPath, configInfo, syncInfo) {
         console.log("[pio.postdeploy] configure", preparedPath, builtPath, deploymentPath);
         var tmpPath = deploymentPath; // + "~" + Date.now();
         return Q.denodeify(removeOldDirectories)(deploymentBasePath, 3).then(function(removed) {
@@ -736,10 +758,11 @@ exports.postdeploy = function(serviceBasePath) {
     //console.log("final activate lines", lines);
                         FS.outputFileSync(PATH.join(tmpPath, "bin/activate.sh"), lines.join("\n"));
 
-                        FS.outputFileSync(PATH.join(tmpPath, ".pio.json"), JSON.stringify(configInfo.json, null, 4));
+                        configInfo.json.config["pio.service"].syncInfo = syncInfo;
 
-                        return FS.copy(configPath, PATH.join(tmpPath, PATH.basename(configPath)), function(err) {
-                            if (err) return callback(err);
+                        FS.outputFileSync(PATH.join(tmpPath, ".pio.json"), JSON.stringify(configInfo.json, null, 4));
+                        //return FS.copy(configPath, PATH.join(tmpPath, PATH.basename(configPath)), function(err) {
+                        //    if (err) return callback(err);
 
                             return EXEC('cp -Rdf "' + PATH.join(preparedPath, "scripts") + '" "' + PATH.join(tmpPath, "scripts") + '"', function(err, stdout, stderr) {
                                 if (err) {
@@ -841,7 +864,7 @@ exports.postdeploy = function(serviceBasePath) {
                                     });
                                 });
                             });
-                        });
+                        //});
                     });
                 });
             })().fail(function(err) {
@@ -996,7 +1019,7 @@ exports.postdeploy = function(serviceBasePath) {
                         var deploymentPath = PATH.join(deploymentBasePath, configInfo.json.config["pio.service"].finalChecksum + "-" + configInfo.json.config["pio.service"].finalChecksum + "-" + configInfo.hash);
                         console.log("Using deployment path: " + deploymentPath);
 
-                        return configure(preparedPath, builtPath, deploymentPath, configInfo).then(function() {
+                        return configure(preparedPath, builtPath, deploymentPath, configInfo, syncInfo).then(function() {
 
                             return run(deploymentPath, configInfo);
                         });
