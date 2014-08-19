@@ -3,15 +3,16 @@
   "version": "0.0.0",
   "pm": "npm",
   "dependencies": {
-    "q": "~1.0.0",
-    "colors": "~0.6.2",
-    "dirsum": "~0.1.1",
-    "request": "~2.33.0",
-    "dot": "~1.0.2",
-    "graceful-fs": "3.0.2",
     "async": "~0.9.0",
+    "colors": "~0.6.2",
+    "deepequal": "0.0.1",
+    "dirsum": "~0.1.1",
+    "dot": "~1.0.2",
     "fs-extra": "~0.8.1",
-  	"jsontool": "~7.0.1",
-    "mfs": "0.1.x"
+    "graceful-fs": "3.0.2",
+    "jsontool": "~7.0.1",
+    "mfs": "0.1.x",
+    "q": "~1.0.0",
+    "request": "~2.33.0"
   }
 }

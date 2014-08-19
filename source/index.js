@@ -548,28 +548,42 @@ exports.postdeploy = function(serviceBasePath) {
                             }
 
                             var tmpPath = archivePath + "~" + Date.now();
-                            return REQUEST({
-                                url: cacheUri,
-                                timeout: 15 * 1000
-                            }, function (err, response) {
-                                if (err) {
-    console.log("ERR.code", err.code);
-                                    console.log("Error downloading '" + cacheUri + "':", err.stack);
+
+                            var proc = SPAWN("wget", [
+                                "--progress=bar",
+                                "-O", tmpPath,
+                                cacheUri
+                            ], {
+                                cwd: PATH.dirname(tmpPath)
+                            });
+                            proc.stdout.on('data', function (data) {
+                                process.stdout.write(data);
+                            });
+                            proc.stderr.on('data', function (data) {
+                                process.stderr.write(data);
+                            });
+                            proc.on('close', function (code) {
+                                if (code !== 0) {
+
+                                    // TODO: Is this correct?
+                                    if (code === 8) {  // Not found.
+                                        // TODO: Optionally skip download and compile from source?
+                                        var err = new Error("Error: Got status '404' while downloading '" + cacheUri + "'");
+                                        err.code = 404;
+                                        return callback(err);
+                                    }
+
+                                    console.error("ERROR: Download of '" + cacheUri + "' failed with code '" + code + "'");
                                     // TODO: Optionally skip download and compile from source?
-                                    return callback(err);
+                                    return callback(new Error("Download of '" + cacheUri + "' failed with code '" + code + "'"));
                                 }
-                                if (response.statusCode !== 200) {
-                                    // TODO: Optionally skip download and compile from source?
-                                    var err = new Error("Error: Got status '" + response.statusCode + "' while downloading '" + cacheUri + "'");
-                                    err.code = response.statusCode;
-                                    return callback(err);
-                                }
+
                                 console.log(("Successfully downloaded existing build from '" + cacheUri + "' to '" + archivePath + "'").green);
                                 return FS.rename(tmpPath, archivePath, function(err) {
                                     if (err) return callback(err);
                                     return callback(null, archivePath);
                                 });
-                            }).pipe(FS.createWriteStream(tmpPath));
+                            });
                         }
 
                         return download(function(err, downloadedArchivePath) {
