@@ -550,7 +550,7 @@ exports.postdeploy = function(serviceBasePath) {
                             var tmpPath = archivePath + "~" + Date.now();
 
                             var proc = SPAWN("wget", [
-                                "--progress=bar",
+                                "--progress=bar:force",
                                 "-O", tmpPath,
                                 cacheUri
                             ], {
