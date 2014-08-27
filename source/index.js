@@ -513,15 +513,18 @@ exports.postdeploy = function(serviceBasePath) {
                             return callback(null, false);
                         }
 //                        if (process.env.PIO_FORCE) {
-                            if (
-                                configInfo.json.config["smi.cli"].syncInfo &&
-                                configInfo.json.config["smi.cli"].syncInfo.sourceHash === syncInfo.sourceHash &&
-                                configInfo.json.config["smi.cli"].syncInfo.scriptsHash === syncInfo.scriptsHash
-                            ) {
-                                console.log(("Source and script hashes same as catalog!").yellow);
-                            } else {
-                                console.log(("Skip downloading existing build from '" + cacheUri + "' as source and script hashes not same as catalog!").yellow);
-                                return callback(null, false);
+                            if (configInfo.json.config["smi.cli"].syncInfo) {
+                                if (
+                                    configInfo.json.config["smi.cli"].syncInfo.sourceHash === syncInfo.sourceHash &&
+                                    configInfo.json.config["smi.cli"].syncInfo.scriptsHash === syncInfo.scriptsHash
+                                ) {
+                                    console.log(("Source and script hashes same as catalog!").yellow);
+                                } else {
+                                    console.log("catalog/local sync info", "sourceHash", configInfo.json.config["smi.cli"].syncInfo.sourceHash, syncInfo.sourceHash);
+                                    console.log("catalog/local sync info", "scriptsHash", configInfo.json.config["smi.cli"].syncInfo.scriptsHash, syncInfo.scriptsHash);
+                                    console.log(("Skip downloading existing build from '" + cacheUri + "' as source and script hashes not same as catalog!").yellow);
+                                    return callback(null, false);
+                                }
                             }
 //                        }
                         if (
