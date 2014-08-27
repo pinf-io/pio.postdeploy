@@ -512,18 +512,18 @@ exports.postdeploy = function(serviceBasePath) {
                         if (!cacheUri) {
                             return callback(null, false);
                         }
-                        if (process.env.PIO_FORCE) {
+//                        if (process.env.PIO_FORCE) {
                             if (
                                 configInfo.json.config["smi.cli"].syncInfo &&
                                 configInfo.json.config["smi.cli"].syncInfo.sourceHash === syncInfo.sourceHash &&
                                 configInfo.json.config["smi.cli"].syncInfo.scriptsHash === syncInfo.scriptsHash
                             ) {
-                                console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE BUT CONTINUE as source and script hashes same as catalog!").yellow);
+                                console.log(("Source and script hashes same as catalog!").yellow);
                             } else {
-                                console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_FORCE!").yellow);
+                                console.log(("Skip downloading existing build from '" + cacheUri + "' as source and script hashes not same as catalog!").yellow);
                                 return callback(null, false);
                             }
-                        }
+//                        }
                         if (
                             configInfo.json.config["pio.service"].config &&
                             configInfo.json.config["pio.service"].config["smi.cli"] &&
