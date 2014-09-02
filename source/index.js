@@ -512,6 +512,10 @@ exports.postdeploy = function(serviceBasePath) {
                         if (!cacheUri) {
                             return callback(null, false);
                         }
+                        if (process.env.PIO_BUILD_CACHE === "false") {
+                            console.log(("Skip downloading existing build from '" + cacheUri + "' due to PIO_BUILD_CACHE === false!").yellow);
+                            return callback(null, false);
+                        }
 //                        if (process.env.PIO_FORCE) {
                             if (configInfo.json.config["smi.cli"].syncInfo) {
                                 if (
@@ -525,6 +529,8 @@ exports.postdeploy = function(serviceBasePath) {
                                     console.log(("Skip downloading existing build from '" + cacheUri + "' as source and script hashes not same as catalog!").yellow);
                                     return callback(null, false);
                                 }
+                            } else {
+                                console.log("Warning: No syncInfo in remote config!");
                             }
 //                        }
                         if (
