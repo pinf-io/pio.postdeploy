@@ -642,15 +642,70 @@ exports.postdeploy = function(serviceBasePath) {
                             FS.mkdirsSync(PATH.join(tmpPath, "bin"));
                         }
 
+                        // Removing downloaded archive to save disk space.
+                        if (FS.existsSync(archivePath)) {
+                            console.log("Removing '" + archivePath + "' to save disk space");
+                            FS.removeSync(archivePath);
+                        }
+
                         if (installCacheExists) {
+
                             FS.chmodSync(PATH.join(tmpPath, "build"), 0744);
-                            console.log("No need to install. Using built cache: " + builtPath);
-                            return FS.outputFile(PATH.join(builtPath, ".success"), "", "utf8", function(err) {
-                                if (err) return callback(err);
-    //                        return FS.rename(tmpPath, builtPath, function(err) {
-    //                            if (err) return callback(err);
-                                return callback(null, builtPath);
-    //                        });
+
+                            return FS.exists(PATH.join(preparedPath, "scripts", "rebuild.sh"), function (exists) {
+                                if (!exists) {
+                                    console.log("Skip Re-install as no reinstall script found. Using built cache: " + builtPath);
+
+                                    return FS.outputFile(PATH.join(builtPath, ".success"), "", "utf8", function(err) {
+                                        if (err) return callback(err);
+            //                        return FS.rename(tmpPath, builtPath, function(err) {
+            //                            if (err) return callback(err);
+                                        return callback(null, builtPath);
+            //                        });
+                                    });
+                                }
+
+                                console.log("Re-installing ...".magenta);
+
+                                var execEnv = {};
+                                for (var name in configInfo.json.env) {
+                                    execEnv[name] = configInfo.json.env[name];
+                                }
+                                execEnv.PATH = PATH.join(__dirname, "node_modules/.bin") + ":" + process.env.PATH;
+                                execEnv.PIO_CONFIG_PATH = PATH.join(syncPath, ".pio.json");
+                                execEnv.PIO_SERVICE_PATH = tmpPath;
+                                execEnv.PIO_SCRIPTS_PATH = PATH.join(preparedPath, "scripts");
+                                execEnv.PIO_FORCE = options.force || false;
+                                execEnv.PIO_VERBOSE = options.verbose || false;
+                                execEnv.PIO_DEBUG = options.debug || false;
+                                execEnv.PIO_SILENT = options.silent || false;
+                                execEnv.HOME = process.env.HOME;
+
+                                var proc = SPAWN("sh", [
+                                    PATH.join(preparedPath, "scripts", "rebuild.sh")
+                                ], {
+                                    cwd: PATH.join(tmpPath, "build"),
+                                    env: execEnv
+                                });
+                                proc.stdout.on('data', function (data) {
+                                    process.stdout.write(data);
+                                });
+                                proc.stderr.on('data', function (data) {
+                                    process.stderr.write(data);
+                                });
+                                proc.on('close', function (code) {
+                                    if (code !== 0) {
+                                        console.error("ERROR: Install script exited with code '" + code + "'");
+                                        return callback(new Error("Install script exited with code '" + code + "'"));
+                                    }
+                                    return FS.outputFile(PATH.join(builtPath, ".success"), "", "utf8", function(err) {
+                                        if (err) return callback(err);
+            //                            return FS.rename(tmpPath, builtPath, function(err) {
+            //                                if (err) return callback(err);
+                                            return callback(null, builtPath);
+            //                            });
+                                    });
+                                });
                             });
                         }
 
